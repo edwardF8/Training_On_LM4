@@ -1,5 +1,4 @@
 
-from transformers import GPT2Tokenizer
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
@@ -10,10 +9,10 @@ from torch.utils.data import Dataset
 def tokenize_and_pack(
     tokenizer,
     bio_stream_iter,
-    n_bios_total,           # for progress bar + size estimation
-    out_path,               # e.g. Path("data/cache/bios_tokens.bin")
+    n_bios_total,            # for progress bar + size estimation
+    out_path,                # e.g. Path("data/cache/bios_tokens.bin")
     seq_len=512,
-    avg_tokens_per_bio=80,  # conservative upper bound for sizing
+    avg_tokens_per_bio=200,  # conservative upper bound for sizing
     batch_size=1024,
 ):
     """Tokenize every bio in the stream, prefix each with <|endoftext|>,

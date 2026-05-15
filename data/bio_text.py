@@ -14,8 +14,7 @@
 #     Models: Part 3.1, 3.2, 3.3, in which the [bioS] dataset was also used in
 #     Part 4.1 as Task [Capo].
 #
-import random 
-import numpy as np
+import random
 
 
 def get_text_simple3(person, exposure, master_seed=0, order=None, reverse_md=False):

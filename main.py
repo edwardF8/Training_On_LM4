@@ -67,13 +67,22 @@ CONFIG.BATCH_SIZE   = 12
 CONFIG.LR           = 1e-3
 CONFIG.WEIGHT_DECAY = 0.01
 CONFIG.WARMUP_STEPS = 1000
-CONFIG.MAX_STEPS    = 80_000
+CONFIG.MAX_STEPS    = 65_000
 CONFIG.GRAD_CLIP    = 1.0
 
+# Small-model sweep matching the paper's `ℓ-h` notation
+# (Allen-Zhu & Li, PhysicsForLM_4_1.pdf Appendix C + Figure 11):
+#   ℓ layers, hidden = 64 · h, h heads.
+# These are the small end of the Capo capacity-scaling sweep — all under
+# ~3M params so training stays fast on a single GPU and the attention
+# patterns are small enough for clean mechinterp.
 MODEL_CONFIGS = [
-    {"name": "2L-192D", "numLayers": 2, "dmodel": 192, "numHeads": 3},
-    {"name": "4L-128D", "numLayers": 4, "dmodel": 128, "numHeads": 2},
-    {"name": "6L-192D", "numLayers": 6, "dmodel": 192, "numHeads": 3},
+    {"name": "2-3", "numLayers": 2, "dmodel": 192, "numHeads": 3},   # ~0.4M params
+    {"name": "4-2", "numLayers": 4, "dmodel": 128, "numHeads": 2},   # ~0.5M params
+    {"name": "4-3", "numLayers": 4, "dmodel": 192, "numHeads": 3},   # ~1.1M params
+    {"name": "5-3", "numLayers": 5, "dmodel": 192, "numHeads": 3},   # ~1.4M params
+    {"name": "6-3", "numLayers": 6, "dmodel": 192, "numHeads": 3},   # ~1.7M params
+    {"name": "8-2", "numLayers": 8, "dmodel": 128, "numHeads": 2},   # ~1.1M params
 ]
 
 
@@ -81,7 +90,7 @@ MODEL_CONFIGS = [
 # DATA
 # ---------------------------
 
-# Sample people (deterministic in SEED) and persist for later mechinterp.
+# Sample people (deterministic in SEED) .
 people = sample_people(N=CONFIG.N, seed=CONFIG.SEED)
 with open(PEOPLE_PATH, "w") as f:
     json.dump(people, f)

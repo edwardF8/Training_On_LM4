@@ -1,12 +1,10 @@
 import numpy as np
 import random
-import typing
 from pathlib import Path
-import random
 
 
-# Adjust if you move/copy the fields directory
-FIELDS_DIR = Path("fields")
+# Resolved relative to this module so the import works regardless of cwd.
+FIELDS_DIR = Path(__file__).parent / "fields"
 
 def load_lines(filename):
     with open(FIELDS_DIR / filename) as f:
