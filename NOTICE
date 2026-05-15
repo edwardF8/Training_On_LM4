@@ -1,0 +1,37 @@
+Training_On_LM4
+Copyright (c) 2026 Edward Friedman
+
+This product includes software developed by Meta Platforms, Inc. and
+affiliates as part of the PhysicsLM4 project
+(https://github.com/facebookresearch/PhysicsLM4),
+licensed under the Apache License, Version 2.0.
+
+Specifically, the following files contain code derived from PhysicsLM4:
+
+  data/bio_text.py
+      Adapted from PhysicsLM4-main/data-synthetic-pretrain/Capo-bioS-bioR/Capo-bioS-bioR.py
+      Original Author: Zeyuan Allen-Zhu
+      Original Copyright (c) Meta Platforms, Inc. and affiliates.
+      Modifications:
+        - Added per-(person, exposure) RNG (`rng = random.Random(seed)`)
+          for reproducibility, replacing global `random` calls.
+        - Default `order` parameter sampled from the per-call RNG so that
+          city-vs-employer ordering is randomized per exposure.
+        - Removed `generate_prompt2` and `augmentation_permutation2`
+          helpers (only used for the bioR Llama-generated dataset variant).
+
+  data/fields/*.txt
+      Verbatim copies of the field word lists from
+      PhysicsLM4-main/data-synthetic-pretrain/Capo-bioS-bioR/fields/.
+      Original Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Reference papers:
+  Allen-Zhu, Z. "Physics of Language Models: Part 4.1, Architecture Design
+    and the Magic of Canon Layers." NeurIPS 2025.
+    https://ssrn.com/abstract=5240330
+  Allen-Zhu, Z. and Li, Y. "Physics of Language Models: Part 3.1, Knowledge
+    Storage and Extraction." ICML 2024.
+    https://arxiv.org/abs/2309.14316
+  Allen-Zhu, Z. and Li, Y. "Physics of Language Models: Part 3.3, Knowledge
+    Capacity Scaling Laws." ICLR 2025.
+    https://arxiv.org/abs/2404.05405

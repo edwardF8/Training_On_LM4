@@ -1,0 +1,10 @@
+# Capo (bioS) training stack.
+# Deliberately loose pins — torch/transformers move fast and any recent
+# combo works for this code. Tighten if you want bit-reproducibility.
+
+torch>=2.0
+transformers>=4.40
+accelerate>=0.30      # required by HF Trainer
+numpy>=1.24
+tqdm>=4.65
+wandb>=0.16           # Trainer reports here; main loop also wandb.log's recall metrics

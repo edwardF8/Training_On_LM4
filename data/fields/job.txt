@@ -1,0 +1,200 @@
+Software Developer
+Accountant
+Teacher
+Nurse
+Lawyer
+Engineer
+Doctor
+Manager
+Salesperson
+Chef
+Writer
+Dentist
+Pharmacist
+Architect
+Electrician
+Plumber
+Mechanic
+Carpenter
+Painter
+Landscaper
+Receptionist
+Secretary
+Administrative Assistant
+Customer Service Representative
+Cashier
+Waiter/Waitress
+Bartender
+Barista
+Retail Associate
+Stocker
+Security Guard
+Police Officer
+Firefighter
+Paramedic
+Pilot
+Flight Attendant
+Travel Agent
+Tour Guide
+Translator
+Interpreter
+Journalist
+Photographer
+Videographer
+Editor
+Graphic Designer
+Web Designer
+Animator
+Game Developer
+Musician
+Singer
+Actor
+Dancer
+Comedian
+Artist
+Author
+Poet
+Librarian
+Bookstore Clerk
+Museum Curator
+Historian
+Archaeologist
+Anthropologist
+Geologist
+Biologist
+Chemist
+Physicist
+Astronomer
+Meteorologist
+Environmental Scientist
+Marine Biologist
+Zoologist
+Botanist
+Veterinarian
+Veterinary Technician
+Animal Trainer
+Dog Walker
+Pet Sitter
+Groomer
+Farmer
+Rancher
+Gardener
+Florist
+Beekeeper
+Baker
+Butcher
+Caterer
+Dietitian
+Nutritionist
+Personal Trainer
+Fitness Instructor
+Yoga Teacher
+Martial Arts Instructor
+Coach
+Athlete
+Referee
+Sports Reporter
+Sports Agent
+Sports Medicine Physician
+Physical Therapist
+Occupational Therapist
+Speech Therapist
+Audiologist
+Optometrist
+Ophthalmologist
+Podiatrist
+Chiropractor
+Massage Therapist
+Acupuncturist
+Psychologist
+Psychiatrist
+Counselor
+Social Worker
+Therapist
+Case Manager
+Human Resources Specialist
+Recruiter
+Training and Development Specialist
+Payroll Specialist
+Benefits Specialist
+Compensation Analyst
+Business Analyst
+Financial Analyst
+Market Research Analyst
+Marketing Specialist
+Advertising Specialist
+Public Relations Specialist
+Event Planner
+Fundraiser
+Grant Writer
+Lobbyist
+Political Consultant
+Campaign Manager
+Pollster
+Journalist
+Blogger
+Podcaster
+Vlogger
+Influencer
+Social Media Manager
+Content Manager
+SEO Specialist
+Data Scientist
+Database Administrator
+Network Administrator
+IT Support Specialist
+Cybersecurity Specialist
+Software Tester
+Quality Assurance Specialist
+Project Manager
+Product Manager
+Scrum Master
+Agile Coach
+Consultant
+Auditor
+Tax Preparer
+Bookkeeper
+Financial Planner
+Insurance Agent
+Real Estate Agent
+Property Manager
+Appraiser
+Home Inspector
+Interior Designer
+Home Stager
+Fashion Designer
+Stylist
+Tailor
+Seamstress
+Cosmetologist
+Hairdresser
+Barber
+Nail Technician
+Makeup Artist
+Esthetician
+Tattoo Artist
+Piercer
+Jeweler
+Goldsmith
+Silversmith
+Blacksmith
+Potter
+Glassblower
+Woodworker
+Furniture Maker
+Upholsterer
+Quilter
+Knitter
+Crocheter
+Embroiderer
+Sewer
+Candle Maker
+Soap Maker
+Perfumer
+Florist
+Balloon Artist
+Clown
+Magician
+Juggler
+Mime
+Circus Performer
