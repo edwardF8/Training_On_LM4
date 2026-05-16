@@ -48,7 +48,7 @@ from transformers import AutoModelForCausalLM, GPT2Tokenizer
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from config import Config
-from data.bio_text import FIELD_SPECS, TEMPLATES_BIRTHDAY
+from data.bio_text import FIELD_SPECS
 from data.sample_people import sample_people
 from data.tokenize_pack import build_vocab_remap
 
@@ -176,6 +176,75 @@ def pick_device() -> str:
     return "cpu"
 
 
+def run_probe(model, tokenizer, old_to_new, people, *,
+              max_people: int = 50, device: str | None = None):
+    """Run the 4-metric birthday probe on an in-memory model.
+
+    Reusable entry point for both the CLI (which loads from a checkpoint) and
+    main.py (which calls this directly on each freshly-trained model).
+
+    Returns a dict with the macro accuracies for MP / DayM / YearMD / FP.
+    """
+    if device is None:
+        device = str(next(model.parameters()).device)
+    model.eval()
+
+    eos_remapped = old_to_new[int(tokenizer.eos_token_id)]
+    templates = FIELD_SPECS["birthday"]["templates"]
+    eval_people = people[:max_people]
+
+    totals = defaultdict(lambda: [0, 0])
+    per_template = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+
+    n_pairs = len(eval_people) * len(templates)
+    pbar = tqdm(total=n_pairs, desc="probe")
+    for person in eval_people:
+        for t_idx, template in enumerate(templates):
+            scores = score_pair(model, tokenizer, old_to_new, eos_remapped,
+                                person, template, device=device)
+            for metric, ok in scores.items():
+                totals[metric][0] += ok
+                totals[metric][1] += 1
+                per_template[t_idx][metric][0] += ok
+                per_template[t_idx][metric][1] += 1
+            pbar.update(1)
+    pbar.close()
+
+    print("\nMacro-average over all (person, template) pairs:")
+    width = max(len(m) for m in totals)
+    macro = {}
+    for metric in ("MP", "DayM", "YearMD", "FP"):
+        c, n = totals[metric]
+        acc = c / max(n, 1)
+        macro[metric] = acc
+        print(f"  {metric:>{width}s}: {c}/{n}  =  {100 * acc:5.1f}%")
+
+    # Per-template macro accuracies, suitable for JSON dump.
+    per_t_acc = {
+        int(t_idx): {
+            m: per_template[t_idx][m][0] / max(per_template[t_idx][m][1], 1)
+            for m in ("MP", "DayM", "YearMD", "FP")
+        }
+        for t_idx in per_template
+    }
+
+    print("\nPer-template FP (5 worst / 5 best):")
+    fp_by_t = sorted(per_t_acc.items(), key=lambda kv: kv[1]["FP"])
+    print("  worst:")
+    for t_idx, accs in fp_by_t[:5]:
+        print(f"    [{t_idx:>2d}] {accs['FP']*100:5.1f}%  {templates[t_idx]!r}")
+    print("  best:")
+    for t_idx, accs in fp_by_t[-5:]:
+        print(f"    [{t_idx:>2d}] {accs['FP']*100:5.1f}%  {templates[t_idx]!r}")
+
+    return {
+        "macro": macro,
+        "per_template": per_t_acc,
+        "n_people": len(eval_people),
+        "n_templates": len(templates),
+    }
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("ckpt", help="Checkpoint dir, e.g. runs/default/2-3/final")
@@ -196,8 +265,6 @@ def main():
 
     print(f"Sampling {N:,} people (seed={seed}) ...")
     people = sample_people(N=N, seed=seed)
-    eval_people = people[: args.m]
-    print(f"  using first {len(eval_people)} for evaluation.")
 
     print(f"Building vocab remap from {pre_reduce} ...")
     old_to_new, _, reduced_vocab = build_vocab_remap(pre_reduce)
@@ -212,47 +279,8 @@ def main():
         print(f"  WARNING: model vocab={model.config.vocab_size} vs remap={reduced_vocab}",
               file=sys.stderr)
 
-    eos_remapped = old_to_new[int(tokenizer.eos_token_id)]
-    templates = FIELD_SPECS["birthday"]["templates"]
-    assert templates is TEMPLATES_BIRTHDAY  # sanity
-
-    # totals[metric] = (correct, total)
-    totals = defaultdict(lambda: [0, 0])
-    per_template = defaultdict(lambda: defaultdict(lambda: [0, 0]))
-
-    n_pairs = len(eval_people) * len(templates)
-    pbar = tqdm(total=n_pairs, desc="probe")
-    for person in eval_people:
-        for t_idx, template in enumerate(templates):
-            scores = score_pair(model, tokenizer, old_to_new, eos_remapped,
-                                person, template, device=device)
-            for metric, ok in scores.items():
-                totals[metric][0] += ok
-                totals[metric][1] += 1
-                per_template[t_idx][metric][0] += ok
-                per_template[t_idx][metric][1] += 1
-            pbar.update(1)
-    pbar.close()
-
-    # ---- Report ----
-    print("\nMacro-average over all (person, template) pairs:")
-    width = max(len(m) for m in totals)
-    for metric in ("MP", "DayM", "YearMD", "FP"):
-        c, n = totals[metric]
-        print(f"  {metric:>{width}s}: {c}/{n}  =  {100 * c / max(n, 1):5.1f}%")
-
-    print("\nPer-template FP (top 5 best / worst):")
-    fp_by_t = sorted(
-        ((t_idx, per_template[t_idx]["FP"][0] / max(per_template[t_idx]["FP"][1], 1))
-         for t_idx in per_template),
-        key=lambda x: x[1],
-    )
-    print("  worst:")
-    for t_idx, acc in fp_by_t[:5]:
-        print(f"    [{t_idx:>2d}] {acc*100:5.1f}%  {templates[t_idx]!r}")
-    print("  best:")
-    for t_idx, acc in fp_by_t[-5:]:
-        print(f"    [{t_idx:>2d}] {acc*100:5.1f}%  {templates[t_idx]!r}")
+    run_probe(model, tokenizer, old_to_new, people,
+              max_people=args.m, device=device)
 
 
 if __name__ == "__main__":

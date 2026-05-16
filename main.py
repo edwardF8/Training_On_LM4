@@ -15,8 +15,11 @@ Change CONFIG.NAME to start a clean experiment without touching anything else.
 """
 
 import json
+import os
 from pathlib import Path
 
+import wandb
+import wandb.util  # `wandb.util.generate_id` isn't re-exported on the top-level module
 from transformers import GPT2Tokenizer
 
 from config import Config
@@ -31,6 +34,7 @@ from data.tokenize_pack import (
 )
 from model.buildModel import create_gpt2_model, create_llama_model
 from model.trainModel import train
+from eval.birthday_probe import run_probe
 
 
 # ---------------------------
@@ -186,6 +190,43 @@ for mc in MODEL_CONFIGS:
         raise ValueError(f"Unknown MODEL_TYPE: {CONFIG.MODEL_TYPE!r}")
 
     out_dir = f"runs/{CONFIG.NAME}/{mc['name']}"
+
+    # Pin a wandb run id so the probe can log into the same run training uses.
+    # HF Trainer's WandbCallback picks this up via the WANDB_RUN_ID env var.
+    wandb_run_id = wandb.util.generate_id()
+    os.environ["WANDB_RUN_ID"] = wandb_run_id
+
     print(f"\n=== Training {mc['name']} → {out_dir} ===")
     train(model, ds, CONFIG, output_dir=out_dir)
     print(f"Done. Checkpoints under {out_dir}/")
+
+    # Birthday memorization probe on the freshly-trained model.
+    print(f"\n=== Probing {mc['name']} ===")
+    results = run_probe(
+        model, tokenizer, old_to_new, people,
+        max_people=50,
+    )
+    probe_path = Path(out_dir) / "final" / "probe_results.json"
+    probe_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(probe_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Saved probe results → {probe_path}")
+
+    # Log probe metrics to wandb, into the training run. Resume if HF's
+    # WandbCallback already finished it; otherwise reuse the open run.
+    if wandb.run is None:
+        wandb.init(id=wandb_run_id, resume="must")
+    wandb.log({
+        "probe/MP":     results["macro"]["MP"],
+        "probe/DayM":   results["macro"]["DayM"],
+        "probe/YearMD": results["macro"]["YearMD"],
+        "probe/FP":     results["macro"]["FP"],
+    })
+    per_t_table = wandb.Table(columns=["template_idx", "MP", "DayM", "YearMD", "FP"])
+    for t_idx, accs in sorted(results["per_template"].items()):
+        per_t_table.add_data(int(t_idx), accs["MP"], accs["DayM"], accs["YearMD"], accs["FP"])
+    wandb.log({"probe/per_template": per_t_table})
+
+    # Close before the next iteration's train() starts a new run.
+    wandb.finish()
+    os.environ.pop("WANDB_RUN_ID", None)
