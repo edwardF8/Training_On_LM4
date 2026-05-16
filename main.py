@@ -21,12 +21,13 @@ from transformers import GPT2Tokenizer
 
 from config import Config
 from data.sample_people import sample_people
-from data.bio_text import bio_stream
+from data.bio_text import bio_stream, render_bio
 from data.tokenize_pack import (
     tokenize_and_pack,
     PackedTokenDataset,
     build_vocab_remap,
     remap_token_file,
+    assert_tokens_in_remap,
 )
 from model.buildModel import create_gpt2_model, create_llama_model
 from model.trainModel import train
@@ -50,6 +51,11 @@ CONFIG.N       = 50_000
 CONFIG.K       = 100
 CONFIG.SEQ_LEN = 512
 
+# Bio contents. Set to e.g.
+#   ("birthday", "birthcity", "university", "field", "company_city", "company_name")
+# for the legacy 6-field Capo bioS layout.
+CONFIG.FIELDS  = ("birthday",)
+
 # Derived paths — everything data-side under cache/{NAME}/.
 DATA_DIR = Path("cache") / CONFIG.NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -63,12 +69,26 @@ CONFIG.POST_REDUCE_PATH = str(DATA_DIR / "bios_postreduce.bin")
 CONFIG.MODEL_TYPE = "llama"
 
 # Training
+#
+# MAX_STEPS sizing (PhysicsForLM_4_1 Appendix A.3, Capo recipe):
+#   one epoch over N people × K paraphrases at ~avg_tokens_per_bio per bio
+#   needs
+#       MAX_STEPS ≈ N * K * avg_tokens_per_bio / (BATCH_SIZE * SEQ_LEN).
+#   The paper's "100 exposures per person" baseline is exactly K=100 × 1 epoch.
+#   For the full 6-field bio (~90 tokens) at N=50k, that's ~73k steps.
+#   For birthday-only (~13 tokens) at N=50k, that's ~10.5k steps; running
+#   65k here means ~6 epochs ≈ 600 effective exposures, which is past the
+#   paper's "100" sweet spot but useful when you want strong memorization
+#   for interp rather than clean architecture comparisons (the paper notes
+#   1000-exposure training diminishes architectural differences).
 CONFIG.BATCH_SIZE   = 12
 CONFIG.LR           = 1e-3
 CONFIG.WEIGHT_DECAY = 0.01
 CONFIG.WARMUP_STEPS = 1000
-CONFIG.MAX_STEPS    = 65_000
 CONFIG.GRAD_CLIP    = 1.0
+
+EPOCHS = 1  # 1 ≈ 100 exposures (paper recipe); 6 ≈ 600 exposures (memorization-leaning)
+CONFIG.MAX_STEPS = round(EPOCHS * CONFIG.N * CONFIG.K * 13 / (CONFIG.BATCH_SIZE * CONFIG.SEQ_LEN))
 
 # Small-model sweep matching the paper's `ℓ-h` notation
 # (Allen-Zhu & Li, PhysicsForLM_4_1.pdf Appendix C + Figure 11):
@@ -99,6 +119,7 @@ print(f"Saved {len(people):,} people → {PEOPLE_PATH}")
 stream = bio_stream(
     people, K=CONFIG.K,
     master_seed=CONFIG.SEED, shuffle_seed=CONFIG.SHUFFLE_SEED,
+    fields=tuple(CONFIG.FIELDS),
 )
 
 tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
@@ -119,6 +140,18 @@ old_to_new, _, CONFIG.reducedVocabSize = build_vocab_remap(CONFIG.PRE_REDUCE_PAT
 remap_token_file(CONFIG.PRE_REDUCE_PATH, CONFIG.POST_REDUCE_PATH, old_to_new)
 CONFIG.reducedEOSToken = old_to_new[int(CONFIG.eosToken)]
 print(f"Reduced vocab size: {CONFIG.reducedVocabSize}")
+
+# Seatbelt: every (template, person) rendering we'll evaluate on must be
+# expressible in the reduced vocab. Sample a few people × every exposure
+# index in [0, K) for each enabled field — that exhausts the template pool
+# via the round-robin schedule render_bio uses.
+sample_prompts = [
+    render_bio(people[i], exposure_idx=e, fields=tuple(CONFIG.FIELDS))
+    for i in range(min(5, len(people)))
+    for e in range(CONFIG.K)
+]
+assert_tokens_in_remap(old_to_new, sample_prompts, tokenizer)
+print(f"Verified all {len(sample_prompts):,} sample prompts tokenize cleanly post-remap.")
 
 # Persist the fully-populated Config so eval/probing tools can rehydrate it.
 CONFIG.save(str(DATA_CONFIG_PATH))

@@ -17,6 +17,12 @@ class Config:
     SEED : int = 0
     SHUFFLE_SEED : int = 1
 
+    # Which attributes appear in each bio. Subset of data.bio_text.FIELD_SPECS
+    # keys ("birthday", "birthcity", "university", "field", "company_city",
+    # "company_name"). Default is birthday-only; flip to all six to reproduce
+    # the legacy Capo bioS layout.
+    FIELDS: tuple = ("birthday",)
+
     PRE_REDUCE_PATH: str = "cache/default/bios_prereduce.bin"
     POST_REDUCE_PATH: str = "cache/default/bios_postreduce.bin"
 

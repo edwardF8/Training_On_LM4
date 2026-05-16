@@ -99,6 +99,26 @@ def decode_from_remapped(ids, new_to_old, tokenizer):
     gpt2_ids = [new_to_old[int(i)] for i in ids]
     return tokenizer.decode(gpt2_ids)
 
+
+def assert_tokens_in_remap(old_to_new, sample_prompts, tokenizer):
+    """Fail loudly if any token in `sample_prompts` is missing from the remap.
+
+    Used as a seatbelt during data prep: every prompt we plan to evaluate on
+    must tokenize into ids the reduced-vocab model knows. With round-robin
+    template coverage this should always pass — the assert catches drift if
+    eval prompts are ever added that the training stream doesn't include.
+    """
+    missing = set()
+    for p in sample_prompts:
+        for tok in tokenizer(p, add_special_tokens=False)["input_ids"]:
+            if int(tok) not in old_to_new:
+                missing.add(int(tok))
+    if missing:
+        raise RuntimeError(
+            f"{len(missing)} prompt token id(s) missing from reduced vocab: "
+            f"{sorted(missing)[:20]}{'...' if len(missing) > 20 else ''}"
+        )
+
 class PackedTokenDataset(Dataset):
     """Reads tokens from a uint16 memmap, returns (input_ids, labels)
     chunks of length seq_len. Labels = inputs (causal LM shift handled
