@@ -181,12 +181,14 @@ for run in RUNS:
             CONFIG.reducedVocabSize, CONFIG.SEQ_LEN,
             CONFIG.dmodel, CONFIG.numLayers, CONFIG.numHeads,
             CONFIG.reducedEOSToken,
+            seed=CONFIG.SEED,
         )
     elif CONFIG.MODEL_TYPE == "gpt2":
         model = create_gpt2_model(
             CONFIG.reducedVocabSize, CONFIG.SEQ_LEN,
             CONFIG.dmodel, CONFIG.numLayers, CONFIG.numHeads,
             CONFIG.reducedEOSToken,
+            seed=CONFIG.SEED,
         )
     else:
         raise ValueError(f"Unknown MODEL_TYPE: {CONFIG.MODEL_TYPE!r}")

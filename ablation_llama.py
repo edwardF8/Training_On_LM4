@@ -43,7 +43,7 @@ CONFIG = Config()
 
 # Separate from main.py's "default" experiment so the two don't share a
 # runs/ subdirectory. Cache is also separate (regenerated once at first run).
-CONFIG.NAME = "bioS_name_date_small_lama_abalation"
+CONFIG.NAME = "bioS_name_date_small_lama_epoch_scale"
 
 INVOCATION = datetime.now().strftime("%Y%m%d-%H%M%S")
 print(f"INVOCATION = {INVOCATION}")
@@ -51,7 +51,7 @@ print(f"INVOCATION = {INVOCATION}")
 # wandb umbrella for this whole ablation sweep. Every run below uses this as
 # its `group`, and `job_type` is set to the study (epochs/layers/heads), so
 # the UI collapses all 14 runs under one entry and lets you split by study.
-SWEEP_NAME = f"bioS_name_date_small_lama_abalation-{INVOCATION}"
+SWEEP_NAME = f"{CONFIG.NAME}-{INVOCATION}"
 
 CONFIG.SEED         = 0
 CONFIG.SHUFFLE_SEED = 1
@@ -95,9 +95,7 @@ BASE = {
 }
 
 ABLATIONS = {
-    "epochs": {"axis": "EPOCHS",    "values": [1, 2, 4, 6]},
-    "layers": {"axis": "numLayers", "values": [2, 3, 4, 6, 8, 10]},
-    "heads":  {"axis": "numHeads",  "values": [2, 3, 6, 8]},
+    "epochs": {"axis": "EPOCHS",    "values": [6, 8, 10, 12, 16]},
 }
 
 
@@ -186,12 +184,14 @@ for run in RUNS:
             CONFIG.reducedVocabSize, CONFIG.SEQ_LEN,
             CONFIG.dmodel, CONFIG.numLayers, CONFIG.numHeads,
             CONFIG.reducedEOSToken,
+            seed=CONFIG.SEED,
         )
     elif CONFIG.MODEL_TYPE == "gpt2":
         model = create_gpt2_model(
             CONFIG.reducedVocabSize, CONFIG.SEQ_LEN,
             CONFIG.dmodel, CONFIG.numLayers, CONFIG.numHeads,
             CONFIG.reducedEOSToken,
+            seed=CONFIG.SEED,
         )
     else:
         raise ValueError(f"Unknown MODEL_TYPE: {CONFIG.MODEL_TYPE!r}")

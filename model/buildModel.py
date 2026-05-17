@@ -18,8 +18,21 @@ no RoPE) is intentionally *not* used — the Physics of LM papers (Parts 3.1,
 and we mirror that here by routing GPT2 through the Llama backbone.
 """
 
+import random
+
+import numpy as np
+import torch
 import torch.nn as nn
 from transformers import LlamaConfig, LlamaForCausalLM
+
+
+def _seed_everything(seed: int) -> None:
+    """Seed torch (CPU + CUDA), numpy, and python RNGs so weight init is reproducible."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 class StandardMLP(nn.Module):
@@ -50,13 +63,19 @@ def create_llama_model(
     n_layer: int,
     n_head: int,
     eos_token: int,
+    seed: int | None = None,
 ):
     """Build a Llama(RoPE) model with **gated** MLPs (intermediate_size = 8d/3).
 
     `eos_token` must be a valid id inside `vocab_size` — pass
     `CONFIG.reducedEOSToken` (the post-vocab-remap id), not the raw GPT-2
     tokenizer's 50256.
+
+    If `seed` is provided, RNGs are seeded immediately before weight init so
+    every call with the same seed and shape produces identical parameters.
     """
+    if seed is not None:
+        _seed_everything(seed)
     cfg = LlamaConfig(
         vocab_size=vocab_size,
         max_position_embeddings=block_size,
@@ -80,6 +99,7 @@ def create_gpt2_model(
     n_layer: int,
     n_head: int,
     eos_token: int,
+    seed: int | None = None,
 ):
     """Build a GPT2(RoPE) model: Llama backbone with **standard** (non-gated) MLPs.
 
@@ -93,7 +113,12 @@ def create_gpt2_model(
 
     `eos_token` must be a valid id inside `vocab_size` — pass
     `CONFIG.reducedEOSToken`, not the raw GPT-2 tokenizer's 50256.
+
+    If `seed` is provided, RNGs are seeded immediately before weight init
+    (covering both the Llama backbone *and* the `StandardMLP` swap-in).
     """
+    if seed is not None:
+        _seed_everything(seed)
     cfg = LlamaConfig(
         vocab_size=vocab_size,
         max_position_embeddings=block_size,
