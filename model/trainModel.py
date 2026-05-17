@@ -17,7 +17,7 @@ def train(model, dataset, config, output_dir="runs/exp1"):
         model: HF causal-LM model (LlamaForCausalLM or GPT2LMHeadModel).
         dataset: PackedTokenDataset returning {"input_ids", "labels"}.
         config: Config object with BATCH_SIZE, LR, WEIGHT_DECAY, WARMUP_STEPS,
-                MAX_STEPS, GRAD_CLIP, SEED.
+                EPOCHS, GRAD_CLIP, SEED.
         output_dir: where checkpoints + final model go.
 
     Returns:
@@ -37,7 +37,7 @@ def train(model, dataset, config, output_dir="runs/exp1"):
         learning_rate=config.LR,
         weight_decay=config.WEIGHT_DECAY,
         warmup_steps=config.WARMUP_STEPS,
-        max_steps=config.MAX_STEPS,
+        num_train_epochs=config.EPOCHS,
         max_grad_norm=config.GRAD_CLIP,
         lr_scheduler_type="cosine",
         logging_steps=50,

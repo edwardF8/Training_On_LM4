@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=capo-bios
+#SBATCH --job-name=trainingBios
 #SBATCH --partition=GPU-shared
 #SBATCH --gres=gpu:1
 #SBATCH --nodes=1
@@ -22,7 +22,7 @@
 #   - No explicit --mem: GPU-shared auto-allocates ~125G per A100 which is
 #     plenty for these small models.
 
-set -e
+set -e   # bail if `conda activate` (or any earlier command) fails
 
 # --- Environment ------------------------------------------------------------
 mkdir -p logs
@@ -30,7 +30,10 @@ mkdir -p logs
 # Clean module state so the job is reproducible regardless of login shell.
 module purge
 module load cuda
-module load anaconda3                # uncomment if your env needs it
+module load anaconda3
+# module load anaconda3                # uncomment if your env needs it
+
+# Activate the project conda env (fill in the name).
 conda activate lm4
 
 # Keep HuggingFace + wandb caches on $LOCAL (fast node-local scratch) if set,

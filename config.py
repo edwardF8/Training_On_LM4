@@ -43,7 +43,7 @@ class Config:
     LR : float = 5e-4
     WEIGHT_DECAY : float = 0.01
     WARMUP_STEPS : int= 200
-    MAX_STEPS : int= 5000
+    EPOCHS : float = 1.0
     GRAD_CLIP : float = 1.0
     # -------------------
     # save

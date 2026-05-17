@@ -1,27 +1,23 @@
-"""Train Capo (bioS) models of varying sizes from scratch.
+"""Ablation sweep over Capo bioS models.
 
-All artifacts for a single experiment are namespaced under CONFIG.NAME:
+Same pipeline as main.py, but instead of MODEL_CONFIGS we expand a base
+architecture against three one-axis sweeps (epochs, layers, heads). To add
+a new study or change a sweep, edit BASE / ABLATIONS below — nothing else
+needs to change.
 
-    cache/{NAME}/
-        people.json          — sampled person dicts (deterministic from SEED)
-        data_config.json     — full Config used for this run
-        bios_prereduce.bin   — raw GPT-2 token ids (memmap)
-        bios_postreduce.bin  — same tokens after reduced-vocab remap
-
-    runs/{NAME}/
-        {model_name}/        — HF Trainer checkpoints for one model size
-
-Change CONFIG.NAME to start a clean experiment without touching anything else.
+Output layout:
+    runs/{NAME}/{INVOCATION}/{study}/{run_name}/
+wandb groups every run from one invocation by study, so the UI's group
+view shows three sweep curves side-by-side.
 """
 
 import json
-import os
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 import wandb
-import wandb.util  # `wandb.util.generate_id` isn't re-exported on the top-level module
+import wandb.util
 from transformers import GPT2Tokenizer
 
 from config import Config
@@ -45,32 +41,28 @@ from eval.birthday_probe import run_probe
 
 CONFIG = Config()
 
-# Experiment name — drives cache/{NAME}/ and runs/{NAME}/. Bump for a fresh
-# experiment so you don't clobber prior artifacts.
-CONFIG.NAME = "default_3eps"
+# Separate from main.py's "default" experiment so the two don't share a
+# runs/ subdirectory. Cache is also separate (regenerated once at first run).
+CONFIG.NAME = "bioS_name_date_small_lama_abalation"
 
-# Unique stamp for this invocation of main.py. Used in wandb run names and
-# the runs/ subdirectory so multiple invocations don't collide. Cache/ is
-# *not* stamped — data is shared across invocations and only regenerated
-# when CONFIG.NAME changes. Override INVOCATION below to use a custom tag
-# (e.g. "before-bugfix") instead of the timestamp.
 INVOCATION = datetime.now().strftime("%Y%m%d-%H%M%S")
 print(f"INVOCATION = {INVOCATION}")
+
+# wandb umbrella for this whole ablation sweep. Every run below uses this as
+# its `group`, and `job_type` is set to the study (epochs/layers/heads), so
+# the UI collapses all 14 runs under one entry and lets you split by study.
+SWEEP_NAME = f"bioS_name_date_small_lama_abalation-{INVOCATION}"
 
 CONFIG.SEED         = 0
 CONFIG.SHUFFLE_SEED = 1
 
 # Data
 CONFIG.N       = 50_000
-CONFIG.K       = 500
+CONFIG.K       = 100
 CONFIG.SEQ_LEN = 512
-
-# Bio contents. Set to e.g.
-#   ("birthday", "birthcity", "university", "field", "company_city", "company_name")
-# for the legacy 6-field Capo bioS layout.
 CONFIG.FIELDS  = ("birthday",)
 
-# Derived paths — everything data-side under cache/{NAME}/.
+# Derived paths
 DATA_DIR = Path("cache") / CONFIG.NAME
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -79,43 +71,63 @@ DATA_CONFIG_PATH = DATA_DIR / "data_config.json"
 CONFIG.PRE_REDUCE_PATH  = str(DATA_DIR / "bios_prereduce.bin")
 CONFIG.POST_REDUCE_PATH = str(DATA_DIR / "bios_postreduce.bin")
 
-# Model family applied to every entry in MODEL_CONFIGS.
-CONFIG.MODEL_TYPE = "llama"
-
-# Training
+# Training (shared across all ablation runs)
+CONFIG.MODEL_TYPE   = "llama"
 CONFIG.BATCH_SIZE   = 12
 CONFIG.LR           = 1e-3
 CONFIG.WEIGHT_DECAY = 0.01
 CONFIG.WARMUP_STEPS = 1000
 CONFIG.GRAD_CLIP    = 1.0
 
-# One epoch = one full pass over the packed dataset, which renders every
-# person K times (see bio_stream). So EPOCHS × K = exposures per person:
-# the paper's "100 exposures" recipe is EPOCHS=1 at K=100; bump for
-# memorization-leaning interp runs (6 ≈ 600 exposures).
-CONFIG.EPOCHS = 1.0
 
-# Small-model sweep matching the paper's `ℓ-h` notation
-# (Allen-Zhu & Li, PhysicsForLM_4_1.pdf Appendix C + Figure 11):
-#   ℓ layers, hidden = 64 · h, h heads.
-# These are the small end of the Capo capacity-scaling sweep — all under
-# ~3M params so training stays fast on a single GPU and the attention
-# patterns are small enough for clean mechinterp.
-MODEL_CONFIGS = [
-    {"name": "2-3", "numLayers": 2, "dmodel": 192, "numHeads": 3},   # ~0.4M params
-    {"name": "4-2", "numLayers": 4, "dmodel": 128, "numHeads": 2},   # ~0.5M params
-    {"name": "4-3", "numLayers": 4, "dmodel": 192, "numHeads": 3},   # ~1.1M params
-    {"name": "5-3", "numLayers": 5, "dmodel": 192, "numHeads": 3},   # ~1.4M params
-    {"name": "6-3", "numLayers": 6, "dmodel": 192, "numHeads": 3},   # ~1.7M params
-    {"name": "8-2", "numLayers": 8, "dmodel": 128, "numHeads": 2},   # ~1.1M params
-]
+# ---------------------------
+# ABLATION SWEEP — edit me
+# ---------------------------
+#
+# BASE is the architecture every study starts from; each ABLATIONS entry
+# overrides exactly one field and sweeps it. dmodel is computed from
+# numHeads via the paper's ℓ-h convention (dmodel = 64 · numHeads).
+
+BASE = {
+    "numLayers": 4,
+    "numHeads":  3,
+    "EPOCHS":    1,
+}
+
+ABLATIONS = {
+    "epochs": {"axis": "EPOCHS",    "values": [1, 2, 4, 6]},
+    "layers": {"axis": "numLayers", "values": [2, 3, 4, 6, 8, 10]},
+    "heads":  {"axis": "numHeads",  "values": [2, 3, 6, 8]},
+}
+
+
+def build_runs(base, ablations):
+    """Expand BASE ×  ABLATIONS into a flat list of run specs."""
+    runs = []
+    for study, spec in ablations.items():
+        axis, values = spec["axis"], spec["values"]
+        for v in values:
+            cfg = {**base, axis: v}
+            cfg["dmodel"] = 64 * cfg["numHeads"]   # paper ℓ-h convention
+            runs.append({
+                "study": study,
+                "name":  f"{study}-{v}",
+                **cfg,
+            })
+    return runs
+
+
+RUNS = build_runs(BASE, ABLATIONS)
+print(f"Planned {len(RUNS)} runs across {len(ABLATIONS)} studies:")
+for r in RUNS:
+    print(f"  [{r['study']:>6}] {r['name']:<12} "
+          f"L={r['numLayers']} H={r['numHeads']} D={r['dmodel']} E={r['EPOCHS']}")
 
 
 # ---------------------------
-# DATA
+# DATA (generated once, shared by every run)
 # ---------------------------
 
-# Sample people (deterministic in SEED) .
 people = sample_people(N=CONFIG.N, seed=CONFIG.SEED)
 with open(PEOPLE_PATH, "w") as f:
     json.dump(people, f)
@@ -128,28 +140,22 @@ stream = bio_stream(
 )
 
 tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-CONFIG.eosToken   = tokenizer.eos_token_id   # 50256
-CONFIG.vocab_size = tokenizer.vocab_size     # 50257
+CONFIG.eosToken   = tokenizer.eos_token_id
+CONFIG.vocab_size = tokenizer.vocab_size
 
 n_tokens, n_seq = tokenize_and_pack(
-    tokenizer,
-    stream,
+    tokenizer, stream,
     n_bios_total=CONFIG.N * CONFIG.K,
     out_path=CONFIG.PRE_REDUCE_PATH,
     seq_len=CONFIG.SEQ_LEN,
 )
 print(f"Wrote {n_tokens:,} tokens → {n_seq:,} sequences of {CONFIG.SEQ_LEN}.")
 
-# Reduce GPT-2's 50k vocab to only the ~3.3k tokens that appear in bioS.
 old_to_new, _, CONFIG.reducedVocabSize = build_vocab_remap(CONFIG.PRE_REDUCE_PATH)
 remap_token_file(CONFIG.PRE_REDUCE_PATH, CONFIG.POST_REDUCE_PATH, old_to_new)
 CONFIG.reducedEOSToken = old_to_new[int(CONFIG.eosToken)]
 print(f"Reduced vocab size: {CONFIG.reducedVocabSize}")
 
-# Seatbelt: every (template, person) rendering we'll evaluate on must be
-# expressible in the reduced vocab. Sample a few people × every exposure
-# index in [0, K) for each enabled field — that exhausts the template pool
-# via the round-robin schedule render_bio uses.
 sample_prompts = [
     render_bio(people[i], exposure_idx=e, fields=tuple(CONFIG.FIELDS))
     for i in range(min(5, len(people)))
@@ -158,7 +164,6 @@ sample_prompts = [
 assert_tokens_in_remap(old_to_new, sample_prompts, tokenizer)
 print(f"Verified all {len(sample_prompts):,} sample prompts tokenize cleanly post-remap.")
 
-# Persist the fully-populated Config so eval/probing tools can rehydrate it.
 CONFIG.save(str(DATA_CONFIG_PATH))
 print(f"Saved config → {DATA_CONFIG_PATH}")
 
@@ -167,13 +172,14 @@ print(f"Dataset has {len(ds):,} sequences.")
 
 
 # ---------------------------
-# TRAIN
+# SWEEP
 # ---------------------------
 
-for mc in MODEL_CONFIGS:
-    CONFIG.numLayers = mc["numLayers"]
-    CONFIG.dmodel    = mc["dmodel"]
-    CONFIG.numHeads  = mc["numHeads"]
+for run in RUNS:
+    CONFIG.numLayers = run["numLayers"]
+    CONFIG.numHeads  = run["numHeads"]
+    CONFIG.dmodel    = run["dmodel"]
+    CONFIG.EPOCHS    = run["EPOCHS"]
 
     if CONFIG.MODEL_TYPE == "llama":
         model = create_llama_model(
@@ -190,23 +196,23 @@ for mc in MODEL_CONFIGS:
     else:
         raise ValueError(f"Unknown MODEL_TYPE: {CONFIG.MODEL_TYPE!r}")
 
-    out_dir = f"runs/{CONFIG.NAME}/{INVOCATION}/{mc['name']}"
+    out_dir = f"runs/{CONFIG.NAME}/{INVOCATION}/{run['study']}/{run['name']}"
 
-    # Explicitly create the wandb run BEFORE train(). HF Trainer's WandbCallback
-    # does `if wandb.run is None: wandb.init(...)`, so it joins this active run
-    # instead of starting its own. `reinit="finish_previous"` forces wandb to
-    # close any prior run state so each model genuinely gets a fresh run id,
-    # even if env vars / wandb caches are sticky.
     wandb_run_id = wandb.util.generate_id()
-    print(f"\n=== Training {mc['name']} → {out_dir} (wandb id {wandb_run_id}) ===")
+    print(f"\n=== Training {run['study']}/{run['name']} → {out_dir} "
+          f"(wandb id {wandb_run_id}) ===")
     wandb.init(
         id=wandb_run_id,
-        name=f"{mc['name']}-{INVOCATION}",
-        group=INVOCATION,
+        name=f"{run['name']}-{INVOCATION}",
+        group=SWEEP_NAME,           # one umbrella for all 14 runs
+        job_type=run["study"],      # sub-grouping by study within that umbrella
+        tags=[run["study"], CONFIG.NAME],
         reinit="finish_previous",
         config={
             **asdict(CONFIG),
-            "model_label": mc["name"],
+            "study":      run["study"],
+            "run_name":   run["name"],
+            "sweep_name": SWEEP_NAME,
             "INVOCATION": INVOCATION,
         },
     )
@@ -214,8 +220,7 @@ for mc in MODEL_CONFIGS:
     train(model, ds, CONFIG, output_dir=out_dir)
     print(f"Done. Checkpoints under {out_dir}/")
 
-    # Birthday memorization probe on the freshly-trained model.
-    print(f"\n=== Probing {mc['name']} ===")
+    print(f"\n=== Probing {run['name']} ===")
     results = run_probe(
         model, tokenizer, old_to_new, people,
         max_people=50,
@@ -226,7 +231,6 @@ for mc in MODEL_CONFIGS:
         json.dump(results, f, indent=2)
     print(f"Saved probe results → {probe_path}")
 
-    # The wandb run we created before train() is still active here.
     wandb.log({
         "probe/MP":     results["macro"]["MP"],
         "probe/DayM":   results["macro"]["DayM"],
@@ -238,5 +242,4 @@ for mc in MODEL_CONFIGS:
         per_t_table.add_data(int(t_idx), accs["MP"], accs["DayM"], accs["YearMD"], accs["FP"])
     wandb.log({"probe/per_template": per_t_table})
 
-    # Close the run so the next iteration's wandb.init starts cleanly.
     wandb.finish()
