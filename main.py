@@ -45,14 +45,14 @@ CONFIG = Config()
 
 # Experiment name — drives cache/{NAME}/ and runs/{NAME}/. Bump for a fresh
 # experiment so you don't clobber prior artifacts.
-CONFIG.NAME = "default"
+CONFIG.NAME = "default_3eps"
 
 CONFIG.SEED         = 0
 CONFIG.SHUFFLE_SEED = 1
 
 # Data
 CONFIG.N       = 50_000
-CONFIG.K       = 100
+CONFIG.K       = 500
 CONFIG.SEQ_LEN = 512
 
 # Bio contents. Set to e.g.
@@ -91,7 +91,7 @@ CONFIG.WEIGHT_DECAY = 0.01
 CONFIG.WARMUP_STEPS = 1000
 CONFIG.GRAD_CLIP    = 1.0
 
-EPOCHS = 1  # 1 ≈ 100 exposures (paper recipe); 6 ≈ 600 exposures (memorization-leaning)
+EPOCHS = 3  # 1 ≈ 100 exposures (paper recipe); 6 ≈ 600 exposures (memorization-leaning)
 CONFIG.MAX_STEPS = round(EPOCHS * CONFIG.N * CONFIG.K * 13 / (CONFIG.BATCH_SIZE * CONFIG.SEQ_LEN))
 
 # Small-model sweep matching the paper's `ℓ-h` notation
@@ -216,6 +216,13 @@ for mc in MODEL_CONFIGS:
     # WandbCallback already finished it; otherwise reuse the open run.
     if wandb.run is None:
         wandb.init(id=wandb_run_id, resume="must")
+    wandb.config.update(
+     {
+        **asdict(CONFIG),
+        "model_label": mc["name"],
+        "EPOCHS": EPOCHS,
+     }, allow_val_change=True,)
+
     wandb.log({
         "probe/MP":     results["macro"]["MP"],
         "probe/DayM":   results["macro"]["DayM"],
