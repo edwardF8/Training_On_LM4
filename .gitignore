@@ -1,0 +1,8 @@
+logs/*
+data/cache/*
+.git/*
+runs/*
+**/__pycache__/
+__pycache__
+cache/
+wandb/
