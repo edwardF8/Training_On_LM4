@@ -101,7 +101,7 @@ BASE = {
 
 ABLATIONS = {
     "16EP_layer": {"axis": "numLayers", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
-    "16EP_heads": {"axis": "numLayers", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
+    "16EP_heads": {"axis": "numHeads", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
     "memorizing_attempts": {"axis": "numLayers", "values": [6, 8, 12], "base": {"EPOCHS": 16, "numHeads":6}},
 
 }
