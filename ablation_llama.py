@@ -11,6 +11,7 @@ wandb groups every run from one invocation by study, so the UI's group
 view shows three sweep curves side-by-side.
 """
 
+import itertools
 import json
 from dataclasses import asdict
 from datetime import datetime
@@ -43,7 +44,7 @@ CONFIG = Config()
 
 # Separate from main.py's "default" experiment so the two don't share a
 # runs/ subdirectory. Cache is also separate (regenerated once at first run).
-CONFIG.NAME = "bioS_name_date_small_lama_epoch_scale"
+CONFIG.NAME = "bioS_N-Bd-Bc-Uni_small_lama_epoch_GRID"
 
 INVOCATION = datetime.now().strftime("%Y%m%d-%H%M%S")
 print(f"INVOCATION = {INVOCATION}")
@@ -60,7 +61,7 @@ CONFIG.SHUFFLE_SEED = 1
 CONFIG.N       = 50_000
 CONFIG.K       = 100
 CONFIG.SEQ_LEN = 512
-CONFIG.FIELDS  = ("birthday",)
+CONFIG.FIELDS  = ("birthday","birthcity")
 
 # Derived paths
 DATA_DIR = Path("cache") / CONFIG.NAME
@@ -100,32 +101,56 @@ BASE = {
 }
 
 ABLATIONS = {
-    "16EP_layer": {"axis": "numLayers", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
-    "16EP_heads": {"axis": "numHeads", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
-    "memorizing_attempts": {"axis": "numLayers", "values": [6, 8, 12], "base": {"EPOCHS": 16, "numHeads":6}},
-
+    "grid":      {"grid": {"numLayers": [2, 4, 6, 8], "numHeads": [2,4, 6, 8], "EPOCHS": [4, 8, 12, 16]}},
 }
-#Format:   "numLayers": {"axis": "numLayers", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
+#Single-axis format:   "numLayers": {"axis": "numLayers", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
+#Grid format:          "grid":      {"grid": {"numLayers": [...], "numHeads": [...], "EPOCHS": [...]}, "base": {...}},
+#    "16EP_layer": {"axis": "numLayers", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
+#    "16EP_heads": {"axis": "numHeads", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
+#    "memorizing_attempts": {"axis": "numLayers", "values": [6, 8, 12], "base": {"EPOCHS": 16, "numHeads":6}},
+
+# Short axis labels used in grid run names (e.g. grid-L4-H6-E16).
+AXIS_ABBREV = {"numLayers": "L", "numHeads": "H", "EPOCHS": "E", "dmodel": "D"}
 
 
 def build_runs(base, ablations):
     """Expand BASE × ABLATIONS into a flat list of run specs.
 
     Each ablation may set "base" to override BASE for that study only;
-    the swept axis value then overrides on top of that.
+    the swept axis value(s) then override on top of that.
+
+    Two ablation formats are supported:
+      - single-axis: {"axis": "<field>", "values": [...]}
+      - grid:        {"grid": {"<field1>": [...], "<field2>": [...], ...}}
     """
     runs = []
     for study, spec in ablations.items():
-        axis, values = spec["axis"], spec["values"]
         study_base = {**base, **spec.get("base", {})}
-        for v in values:
-            cfg = {**study_base, axis: v}
-            cfg["dmodel"] = 64 * cfg["numHeads"]   # paper ℓ-h convention
-            runs.append({
-                "study": study,
-                "name":  f"{study}-{v}",
-                **cfg,
-            })
+
+        if "grid" in spec:
+            axes   = list(spec["grid"].keys())
+            combos = itertools.product(*spec["grid"].values())
+            for combo in combos:
+                cfg = {**study_base, **dict(zip(axes, combo))}
+                cfg["dmodel"] = 64 * cfg["numHeads"]   # paper ℓ-h convention
+                short = "-".join(
+                    f"{AXIS_ABBREV.get(k, k)}{v}" for k, v in zip(axes, combo)
+                )
+                runs.append({
+                    "study": study,
+                    "name":  f"{study}-{short}",
+                    **cfg,
+                })
+        else:
+            axis, values = spec["axis"], spec["values"]
+            for v in values:
+                cfg = {**study_base, axis: v}
+                cfg["dmodel"] = 64 * cfg["numHeads"]   # paper ℓ-h convention
+                runs.append({
+                    "study": study,
+                    "name":  f"{study}-{v}",
+                    **cfg,
+                })
     return runs
 
 
@@ -234,9 +259,10 @@ for run in RUNS:
     train(model, ds, CONFIG, output_dir=out_dir)
     print(f"Done. Checkpoints under {out_dir}/")
 
-    print(f"\n=== Probing {run['name']} ===")
+    print(f"\n=== Probing {run['name']} on fields={tuple(CONFIG.FIELDS)} ===")
     results = run_probe(
         model, tokenizer, old_to_new, people,
+        fields=tuple(CONFIG.FIELDS),
         max_people=50,
     )
     probe_path = Path(out_dir) / "final" / "probe_results.json"
@@ -245,15 +271,21 @@ for run in RUNS:
         json.dump(results, f, indent=2)
     print(f"Saved probe results → {probe_path}")
 
-    wandb.log({
-        "probe/MP":     results["macro"]["MP"],
-        "probe/DayM":   results["macro"]["DayM"],
-        "probe/YearMD": results["macro"]["YearMD"],
-        "probe/FP":     results["macro"]["FP"],
-    })
-    per_t_table = wandb.Table(columns=["template_idx", "MP", "DayM", "YearMD", "FP"])
-    for t_idx, accs in sorted(results["per_template"].items()):
-        per_t_table.add_data(int(t_idx), accs["MP"], accs["DayM"], accs["YearMD"], accs["FP"])
-    wandb.log({"probe/per_template": per_t_table})
+    # Log FP_FULL (whole-bio AR match) and per-field TF / FP under
+    # probe/<field>/{TF,FP}.
+    log_payload = {"probe/FP_FULL": results["FP_FULL"]}
+    for field, fr in results["per_field"].items():
+        log_payload[f"probe/{field}/TF"] = fr["TF"]
+        log_payload[f"probe/{field}/FP"] = fr["FP"]
+    wandb.log(log_payload)
+
+    # One per-template table per field, columns: template_idx, TF, FP.
+    for field, fr in results["per_field"].items():
+        if not fr["per_template"]:
+            continue
+        table = wandb.Table(columns=["template_idx", "TF", "FP"])
+        for t_idx, accs in sorted(fr["per_template"].items()):
+            table.add_data(int(t_idx), accs["TF"], accs["FP"])
+        wandb.log({f"probe/per_template/{field}": table})
 
     wandb.finish()
