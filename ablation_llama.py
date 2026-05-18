@@ -1,14 +1,61 @@
 """Ablation sweep over Capo bioS models.
 
 Same pipeline as main.py, but instead of MODEL_CONFIGS we expand a base
-architecture against three one-axis sweeps (epochs, layers, heads). To add
-a new study or change a sweep, edit BASE / ABLATIONS below — nothing else
-needs to change.
+architecture against single-axis or grid sweeps. To add a new study or
+change a sweep, edit BASE / ABLATIONS below — nothing else needs to
+change.
 
-Output layout:
+Output layout
+-------------
     runs/{NAME}/{INVOCATION}/{study}/{run_name}/
+        ...                                    # train checkpoints
+        final/                                 # final checkpoint dir
+            probe_sequential.json              # sequentialProbe full results
+            probe_separate.json                # separateProbe full results
+                                               #   (only if len(FIELDS) > 1)
+
 wandb groups every run from one invocation by study, so the UI's group
-view shows three sweep curves side-by-side.
+view shows the sweep curves side-by-side.
+
+Probing strategies
+------------------
+Each run is probed by one or two complementary probes:
+
+    sequentialProbe   (eval/sequential_probe.py — always run)
+        Renders the full multi-field bio exactly as it was at training
+        time: fields concatenated in order, every field after the first
+        using a pronoun ("He"/"She") for the subject. Per (person,
+        exposure) it does ONE teacher-forced forward pass and ONE greedy
+        autoregressive decode of the full bio. Metrics:
+          • TF_<field>  : teacher-forced; given the TRUE bio up to the
+                          field's value, does the model predict every
+                          value token correctly?
+          • FP_<field>  : autoregressive from [EOS]; do the generated
+                          tokens at the field's value span match? Errors
+                          in earlier fields compound.
+          • FP_FULL     : autoregressive over the whole bio; the entire
+                          generated sequence must match token-for-token.
+
+    separateProbe     (eval/separate_probing.py — only run when
+                       len(CONFIG.FIELDS) > 1)
+        Renders an INDEPENDENT one-field bio for each field, ALWAYS
+        substituting the full name for the subject (so the bio is
+        identifiable without prior context). Per (person, field,
+        exposure) it does one TF pass and one AR decode of that
+        one-field bio. Metrics:
+          • TF_<field> / FP_<field> as above (no FP_FULL — each field
+            is its own bio).
+
+The gap (sequential − separate) reveals how much the model relies on
+cross-field context vs. direct (name → value) memorization.
+
+wandb keys (per run)
+--------------------
+    sequentialProbe/FP_FULL
+    sequentialProbe/<field>/{TF,FP}
+    sequentialProbe/per_template/<field>    (table)
+    separateProbe/<field>/{TF,FP}           (multi-field only)
+    separateProbe/per_template/<field>      (table; multi-field only)
 """
 
 import itertools
@@ -33,7 +80,8 @@ from data.tokenize_pack import (
 )
 from model.buildModel import create_gpt2_model, create_llama_model
 from model.trainModel import train
-from eval.birthday_probe import run_probe
+from eval.sequential_probe import run_probe as run_sequential_probe
+from eval.separate_probing import run_separate_probe
 
 
 # ---------------------------
@@ -259,33 +307,74 @@ for run in RUNS:
     train(model, ds, CONFIG, output_dir=out_dir)
     print(f"Done. Checkpoints under {out_dir}/")
 
-    print(f"\n=== Probing {run['name']} on fields={tuple(CONFIG.FIELDS)} ===")
-    results = run_probe(
-        model, tokenizer, old_to_new, people,
-        fields=tuple(CONFIG.FIELDS),
-        max_people=50,
-    )
-    probe_path = Path(out_dir) / "final" / "probe_results.json"
-    probe_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(probe_path, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"Saved probe results → {probe_path}")
+    # -------------------------------------------------------------------
+    # PROBING
+    # -------------------------------------------------------------------
+    # We always run the sequentialProbe (multi-field bio scored in the
+    # exact form the model saw at training). When there's more than one
+    # field we ALSO run the separateProbe (each field as a standalone
+    # one-field bio with the full name substituted for any pronoun) — the
+    # gap between the two reveals how much the model leans on cross-field
+    # context vs. direct (name → value) memorization.
+    #
+    # Outputs per run, written under {out_dir}/final/:
+    #   probe_sequential.json    — full sequentialProbe results dict
+    #   probe_separate.json      — full separateProbe results dict (multi-field only)
+    #
+    # wandb keys (per run):
+    #   sequentialProbe/FP_FULL
+    #   sequentialProbe/<field>/{TF,FP}
+    #   sequentialProbe/per_template/<field>   (table)
+    #   separateProbe/<field>/{TF,FP}          (multi-field only)
+    #   separateProbe/per_template/<field>     (table; multi-field only)
+    fields = tuple(CONFIG.FIELDS)
 
-    # Log FP_FULL (whole-bio AR match) and per-field TF / FP under
-    # probe/<field>/{TF,FP}.
-    log_payload = {"probe/FP_FULL": results["FP_FULL"]}
-    for field, fr in results["per_field"].items():
-        log_payload[f"probe/{field}/TF"] = fr["TF"]
-        log_payload[f"probe/{field}/FP"] = fr["FP"]
+    print(f"\n=== sequentialProbe {run['name']} on fields={fields} ===")
+    seq_results = run_sequential_probe(
+        model, tokenizer, old_to_new, people,
+        fields=fields, max_people=50,
+    )
+    seq_path = Path(out_dir) / "final" / "probe_sequential.json"
+    seq_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(seq_path, "w") as f:
+        json.dump(seq_results, f, indent=2)
+    print(f"Saved → {seq_path}")
+
+    log_payload = {"sequentialProbe/FP_FULL": seq_results["FP_FULL"]}
+    for field, fr in seq_results["per_field"].items():
+        log_payload[f"sequentialProbe/{field}/TF"] = fr["TF"]
+        log_payload[f"sequentialProbe/{field}/FP"] = fr["FP"]
+
+    sep_results = None
+    if len(fields) > 1:
+        print(f"\n=== separateProbe {run['name']} on fields={fields} ===")
+        sep_results = run_separate_probe(
+            model, tokenizer, old_to_new, people,
+            fields=fields, max_people=50,
+        )
+        sep_path = Path(out_dir) / "final" / "probe_separate.json"
+        with open(sep_path, "w") as f:
+            json.dump(sep_results, f, indent=2)
+        print(f"Saved → {sep_path}")
+
+        for field, fr in sep_results["per_field"].items():
+            log_payload[f"separateProbe/{field}/TF"] = fr["TF"]
+            log_payload[f"separateProbe/{field}/FP"] = fr["FP"]
+
     wandb.log(log_payload)
 
-    # One per-template table per field, columns: template_idx, TF, FP.
-    for field, fr in results["per_field"].items():
-        if not fr["per_template"]:
-            continue
-        table = wandb.Table(columns=["template_idx", "TF", "FP"])
-        for t_idx, accs in sorted(fr["per_template"].items()):
-            table.add_data(int(t_idx), accs["TF"], accs["FP"])
-        wandb.log({f"probe/per_template/{field}": table})
+    # Per-template tables (one per (probe, field)).
+    def _log_per_template(probe_ns, results):
+        for field, fr in results["per_field"].items():
+            if not fr["per_template"]:
+                continue
+            table = wandb.Table(columns=["template_idx", "TF", "FP"])
+            for t_idx, accs in sorted(fr["per_template"].items()):
+                table.add_data(int(t_idx), accs["TF"], accs["FP"])
+            wandb.log({f"{probe_ns}/per_template/{field}": table})
+
+    _log_per_template("sequentialProbe", seq_results)
+    if sep_results is not None:
+        _log_per_template("separateProbe", sep_results)
 
     wandb.finish()

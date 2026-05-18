@@ -36,7 +36,7 @@ from data.tokenize_pack import (
 )
 from model.buildModel import create_gpt2_model, create_llama_model
 from model.trainModel import train
-from eval.birthday_probe import run_probe
+from eval.sequential_probe import run_probe
 
 
 # ---------------------------

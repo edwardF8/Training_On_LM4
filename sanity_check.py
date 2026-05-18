@@ -108,7 +108,8 @@ def check_project_imports():
         "data.tokenize_pack",
         "model.buildModel",
         "model.trainModel",
-        "eval.birthday_probe",
+        "eval.sequential_probe",
+        "eval.separate_probing",
     ]
     for mod in project_modules:
         check(mod, lambda mod=mod: importlib.import_module(mod) and None)
@@ -192,29 +193,46 @@ def check_probe_smoke():
     section("Probe smoke test")
     import torch
     from data.sample_people import sample_people
-    from eval.birthday_probe import build_chunks, score_pair
-    from data.bio_text import TEMPLATES_BIRTHDAY
+    from eval.sequential_probe import (
+        build_multi_field_pieces, tokenize_bio, score_pair,
+    )
+    from eval.separate_probing import (
+        build_single_field_chunks, score_field_pair,
+    )
 
-    def chunks_split_cleanly():
+    def pieces_reassemble():
         person = sample_people(N=1, seed=0)[0]
-        c = build_chunks(person, TEMPLATES_BIRTHDAY[0])
-        joined = c["prefix"] + c["month"] + c["day"] + c["sep"] + c["year"] + c["trailing"]
-        return f"chunks reassemble to: {joined.strip()!r}"
-    check("build_chunks", chunks_split_cleanly)
+        pieces = build_multi_field_pieces(person, ("birthday", "birthcity"),
+                                          exposure_idx=0)
+        joined = "".join(p["pre"] + p["value"] + p["post"] for p in pieces)
+        return f"pieces reassemble to: {joined.strip()!r}"
+    check("build_multi_field_pieces", pieces_reassemble)
 
-    def score_one_pair():
-        # Tiny throwaway model with a tokenizer-matched vocab, just to make sure
-        # score_pair runs end-to-end. Accuracy doesn't matter here.
+    def single_field_chunks_reassemble():
+        person = sample_people(N=1, seed=0)[0]
+        c = build_single_field_chunks(person, "birthcity", exposure_idx=0)
+        joined = c["pre"] + c["value"] + c["post"]
+        # Pronoun must be replaced with the full name in separate-field bios.
+        full_name = (f"{person['first_name']} {person['middle_name']} "
+                     f"{person['last_name']}")
+        assert full_name in joined, "separate-field bio must contain full name"
+        return f"single-field bio: {joined.strip()!r}"
+    check("build_single_field_chunks (name swap)", single_field_chunks_reassemble)
+
+    def score_sequential_end_to_end():
+        # Tiny throwaway model with a tokenizer-matched vocab; we only check
+        # that score_pair runs end-to-end and returns the expected keys.
         from transformers import GPT2Tokenizer
         from model.buildModel import create_llama_model
+
         tok = GPT2Tokenizer.from_pretrained("gpt2")
-        # Build a vocab map covering tokens of one rendered bio.
         person = sample_people(N=1, seed=0)[0]
-        bio = " " + TEMPLATES_BIRTHDAY[0].format(
-            name=f"{person['first_name']} {person['middle_name']} {person['last_name']}",
-            birthday=f"{person['birthmonth']} {person['birthday']}, {person['birthyear']}",
-        )
-        ids = tok(bio, add_special_tokens=False)["input_ids"] + [tok.eos_token_id]
+        fields = ("birthday", "birthcity")
+        pieces = build_multi_field_pieces(person, fields, exposure_idx=0)
+
+        # Build a vocab map covering every token of the rendered bio + EOS.
+        text = "".join(p["pre"] + p["value"] + p["post"] for p in pieces)
+        ids = tok(text, add_special_tokens=False)["input_ids"] + [tok.eos_token_id]
         unique = sorted(set(ids))
         old_to_new = {t: i for i, t in enumerate(unique)}
         eos_remapped = old_to_new[tok.eos_token_id]
@@ -225,11 +243,21 @@ def check_probe_smoke():
             n_layer=2, n_head=2, eos_token=eos_remapped,
         ).to(device).eval()
 
+        # Sanity: tokenize_bio agrees that all chunks live in the vocab map.
+        full_ids, spans, _ = tokenize_bio(pieces, tok, old_to_new, eos_remapped)
+        assert len(spans) == len(fields)
+
         scores = score_pair(m, tok, old_to_new, eos_remapped, person,
-                            TEMPLATES_BIRTHDAY[0], device=device)
-        assert set(scores) == {"MP", "DayM", "YearMD", "FP"}
-        return f"score_pair returned {scores}"
-    check("score_pair end-to-end", score_one_pair)
+                            fields, exposure_idx=0, device=device)
+        assert set(scores) == {"TF", "FP", "FP_FULL", "t_idx"}
+        assert set(scores["TF"].keys()) == set(fields)
+
+        sep = score_field_pair(m, tok, old_to_new, eos_remapped, person,
+                               "birthcity", exposure_idx=0, device=device)
+        assert set(sep) == {"TF", "FP", "t_idx"}
+        return (f"seq score_pair → keys={sorted(scores)}, "
+                f"sep score_field_pair → keys={sorted(sep)}")
+    check("score_pair / score_field_pair end-to-end", score_sequential_end_to_end)
 
 
 def check_wandb_auth():

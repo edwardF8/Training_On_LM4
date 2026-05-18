@@ -1,7 +1,13 @@
-"""Bio memorization probe — multi-field, TF / FP per field + FP_FULL.
+"""Sequential probe — multi-field, TF / FP per field + FP_FULL.
 
-For each (eval person, exposure_idx) pair we render the bio over the
-requested `fields` (in order), then score three families of metrics:
+For each (eval person, exposure_idx) pair we render the full multi-field
+bio over the requested `fields` (in order), exactly as the model saw it
+at training time. This is the SEQUENTIAL probe: every field after the
+first uses a pronoun subject (He/She) and therefore depends on prior
+fields to disambiguate "who". To probe each field standing alone (full
+name as subject, no cross-field context), use `eval.separate_probing`.
+
+We score three families of metrics:
 
   TF_{field}   (Teacher-Forced)
       One forward pass on the full TRUE bio. For each field F, check that
@@ -26,10 +32,10 @@ is ~len(bio) forward passes (dominated by the AR decode).
 Usage
 -----
     # from project root
-    python -m eval.birthday_probe runs/.../final
-    python -m eval.birthday_probe runs/.../final --m 50 \\
+    python -m eval.sequential_probe runs/.../final
+    python -m eval.sequential_probe runs/.../final --m 50 \\
         --fields birthday,birthcity,university
-    python -m eval.birthday_probe runs/.../final --exposures 46
+    python -m eval.sequential_probe runs/.../final --exposures 46
 
 The probe rebuilds the GPT-2 -> reduced-vocab remap from the run's
 bios_prereduce.bin (same as `recall_probe.py`).
