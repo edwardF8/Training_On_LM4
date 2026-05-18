@@ -1,53 +1,29 @@
-"""Ablation sweep over Capo bioS models — single-axis.
+"""Ablation sweep over Capo bioS models — full-factorial GRID.
 
-Same pipeline as main.py, but instead of MODEL_CONFIGS we expand a BASE
-architecture against one-axis sweeps defined in `ABLATIONS`. Each entry
-overrides exactly one field (e.g. numLayers ∈ {2, 3, 4, 6, 8, 10}) while
-the others stay fixed at BASE. To add a study or change a sweep, edit
-BASE / ABLATIONS below — nothing else needs to change.
+Same pipeline as `ablation_llama.py`, but `ABLATIONS` is a single grid
+entry that cross-products several axes (numLayers × numHeads × EPOCHS)
+into one big sweep instead of three independent single-axis sweeps. Run
+counts grow multiplicatively — use this when you have plenty of compute.
 
-For the full-factorial grid version, see `ablation_llama_grid.py`.
+For the single-axis version, see `ablation_llama.py`.
 
 Output layout
 -------------
     runs/{NAME}/{INVOCATION}/{study}/{run_name}/
         ...                                    # train checkpoints
         final/                                 # final checkpoint dir
-            probe_birthday.json                # birthdayProbe results
+            probe_birthday.json                # birthdayProbe results (if enabled)
             probe_sequential.json              # sequentialProbe results (if enabled)
             probe_separate.json                # separateProbe results (if enabled,
                                                #   multi-field only)
 
-wandb groups every run from one invocation by study, so the UI's group
-view shows the sweep curves side-by-side.
+Run names look like `grid-L4-H6-E16` (encoded via AXIS_ABBREV below).
 
-Probing strategies
-------------------
-Which probes run is controlled by the `PROBES` list near the top. Pick any
-subset from:
-
-    "birthday_legacy"  (eval/birthday_probe_legacy.py)
-        The original 4-metric birthday probe: MP / DayM / YearMD / FP.
-        Birthday-only — ignores any other fields. Default here, since
-        single-axis sweeps usually probe one field at a time.
-
-    "sequential"       (eval/sequential_probe.py)
-        Renders the full multi-field bio exactly as at training (pronouns
-        after the first field). Per (person, exposure): one TF forward
-        pass + one greedy AR decode of the whole bio. Metrics:
-          • TF_<field>  — given TRUE prior bio, predicts every value token.
-          • FP_<field>  — AR decode from [EOS]; field's value span match.
-          • FP_FULL     — entire generated sequence matches token-for-token.
-
-    "separate"         (eval/separate_probing.py)
-        Each field probed independently with the FULL NAME always
-        substituted for the subject (the pronoun has no antecedent when
-        the field stands alone). Per (person, field, exposure): one TF
-        pass + one AR decode of that one-field bio.
-          • TF_<field> / FP_<field>; no FP_FULL.
-
-The (sequential − separate) gap reveals how much the model leans on
-cross-field context vs. direct (name → value) memorization.
+Probing strategies — see `ablation_llama.py` docstring for full details.
+Pick any subset of {"birthday_legacy", "sequential", "separate"} via the
+`PROBES` list near the top. Grid sweeps with multiple fields typically
+want both `sequential` and `separate` so the cross-field vs. direct
+memorization gap shows up.
 
 wandb keys (per run, dispatched by `eval/probes.py`)
 ----------------------------------------------------
@@ -60,6 +36,7 @@ wandb keys (per run, dispatched by `eval/probes.py`)
     separateProbe/per_template/<field>       (table)
 """
 
+import itertools
 import json
 from dataclasses import asdict
 from datetime import datetime
@@ -90,13 +67,11 @@ from eval.probes import run_probes
 
 CONFIG = Config()
 
-CONFIG.NAME = "bioS_birthday_lama_higher_capabilites"
+CONFIG.NAME = "bioS_N-Bd-Bc-lama_epoch_GRID"
 
 INVOCATION = datetime.now().strftime("%Y%m%d-%H%M%S")
 print(f"INVOCATION = {INVOCATION}")
 
-# wandb umbrella for this whole ablation sweep. Every run below uses this
-# as its `group`; `job_type` is the study name so the UI can sub-group.
 SWEEP_NAME = f"{CONFIG.NAME}-{INVOCATION}"
 
 CONFIG.SEED         = 0
@@ -106,7 +81,7 @@ CONFIG.SHUFFLE_SEED = 1
 CONFIG.N       = 50_000
 CONFIG.K       = 100
 CONFIG.SEQ_LEN = 512
-CONFIG.FIELDS  = ("birthday",)
+CONFIG.FIELDS  = ("birthday", "birthcity")
 
 # Derived paths
 DATA_DIR = Path("cache") / CONFIG.NAME
@@ -126,53 +101,61 @@ CONFIG.WARMUP_STEPS = 1000
 CONFIG.GRAD_CLIP    = 1.0
 
 
-# PROBE SELECTION 
-# Pick any subset of {"birthday_legacy", "sequential", "separate"}, Each probe lives in its own wandb namespace and JSON file (see eval/probes.py).
-PROBES = ("birthday_legacy",)
+# ---------------------------
+# PROBE SELECTION
+# ---------------------------
+# Pick any subset of {"birthday_legacy", "sequential", "separate"}.
+# Each probe lives in its own wandb namespace and JSON file (see eval/probes.py).
+
+PROBES = ("sequential", "separate")
 
 
 # ---------------------------
-# ABLATION SWEEP — edit me
+# GRID SWEEP — edit me
 # ---------------------------
+#
+# BASE supplies fallbacks for any axis the grid doesn't sweep. The grid
+# values then cross-product to produce one run per combination.
+# dmodel is computed from numHeads via the paper's ℓ-h convention
+# (dmodel = 64 · numHeads).
 
-# BASE is the architecture every study starts from; 
-# each ABLATIONS entry overrides exactly one field and sweeps it. 
-# dmodel is computed from numHeads via the paper's ℓ-h convention (dmodel = 64 · numHeads).
-BASE = { "numLayers": 4, "numHeads":  3, "EPOCHS":   1}
-
-# Per-study overrides: add an optional "base" dict to any ABLATIONS entry
-# to overlay on top of the global BASE for that study only.
-ABLATIONS = {
-    "16EP_layer": {"axis": "numLayers", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
-    "16EP_heads": {"axis": "numHeads", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
-    "memorizing_attempts": {"axis": "numLayers", "values": [6, 8, 12], "base": {"EPOCHS": 16, "numHeads":6}},
+BASE = {
+    "numLayers": 4,
+    "numHeads":  3,
+    "EPOCHS":    4,
 }
 
-def build_runs(base, ablations):
-    """Expand BASE × ABLATIONS into a flat list of run specs.
+GRID = {
+    "numLayers": [2, 4, 6, 8],
+    "numHeads":  [2, 4, 6, 8],
+    "EPOCHS":    [4, 8, 12, 16],
+}
 
-    Each ablation may set "base" to override BASE for that study only;
-    the swept axis value then overrides on top of that.
-    """
+# Short axis labels used in grid run names (e.g. grid-L4-H6-E16).
+AXIS_ABBREV = {"numLayers": "L", "numHeads": "H", "EPOCHS": "E", "dmodel": "D"}
+
+
+def build_runs(base, grid):
+    """Cross-product `grid` axes; overlay each combo on `base`."""
+    axes   = list(grid.keys())
+    combos = itertools.product(*grid.values())
     runs = []
-    for study, spec in ablations.items():
-        axis, values = spec["axis"], spec["values"]
-        study_base = {**base, **spec.get("base", {})}
-        for v in values:
-            cfg = {**study_base, axis: v}
-            cfg["dmodel"] = 64 * cfg["numHeads"]   # paper ℓ-h convention
-            runs.append({
-                "study": study,
-                "name":  f"{study}-{v}",
-                **cfg,
-            })
+    for combo in combos:
+        cfg = {**base, **dict(zip(axes, combo))}
+        cfg["dmodel"] = 64 * cfg["numHeads"]   # paper ℓ-h convention
+        short = "-".join(f"{AXIS_ABBREV.get(k, k)}{v}" for k, v in zip(axes, combo))
+        runs.append({
+            "study": "grid",
+            "name":  f"grid-{short}",
+            **cfg,
+        })
     return runs
 
 
-RUNS = build_runs(BASE, ABLATIONS)
-print(f"Planned {len(RUNS)} runs across {len(ABLATIONS)} studies:")
+RUNS = build_runs(BASE, GRID)
+print(f"Planned {len(RUNS)} grid runs:")
 for r in RUNS:
-    print(f"  [{r['study']:>6}] {r['name']:<14} "
+    print(f"  [{r['study']:>5}] {r['name']:<24} "
           f"L={r['numLayers']} H={r['numHeads']} D={r['dmodel']} E={r['EPOCHS']}")
 
 
