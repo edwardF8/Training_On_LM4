@@ -44,7 +44,7 @@ CONFIG = Config()
 
 # Separate from main.py's "default" experiment so the two don't share a
 # runs/ subdirectory. Cache is also separate (regenerated once at first run).
-CONFIG.NAME = "bioS_N-Bd-Bc-Uni_small_lama_epoch_GRID"
+CONFIG.NAME = "bioS_N-Bd-Bc-lama_epoch_GRID"
 
 INVOCATION = datetime.now().strftime("%Y%m%d-%H%M%S")
 print(f"INVOCATION = {INVOCATION}")
