@@ -87,25 +87,39 @@ CONFIG.GRAD_CLIP    = 1.0
 # BASE is the architecture every study starts from; each ABLATIONS entry
 # overrides exactly one field and sweeps it. dmodel is computed from
 # numHeads via the paper's ℓ-h convention (dmodel = 64 · numHeads).
+#
+# Per-study overrides: add an optional "base" dict to any ABLATIONS entry
+# to overlay on top of the global BASE for that study only. Useful when a
+# sweep needs different fixed hyperparams (e.g. more EPOCHS to give small
+# capacity models a fair chance to memorize).
 
 BASE = {
     "numLayers": 4,
     "numHeads":  3,
-    "EPOCHS":    1,
+    "EPOCHS":    4,
 }
 
 ABLATIONS = {
-    "epochs": {"axis": "EPOCHS",    "values": [6, 8, 10, 12, 16]},
+    "16EP_layer": {"axis": "numLayers", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
+    "16EP_heads": {"axis": "numLayers", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
+    "memorizing_attempts": {"axis": "numLayers", "values": [6, 8, 12], "base": {"EPOCHS": 16, "numHeads":6}},
+
 }
+#Format:   "numLayers": {"axis": "numLayers", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
 
 
 def build_runs(base, ablations):
-    """Expand BASE ×  ABLATIONS into a flat list of run specs."""
+    """Expand BASE × ABLATIONS into a flat list of run specs.
+
+    Each ablation may set "base" to override BASE for that study only;
+    the swept axis value then overrides on top of that.
+    """
     runs = []
     for study, spec in ablations.items():
         axis, values = spec["axis"], spec["values"]
+        study_base = {**base, **spec.get("base", {})}
         for v in values:
-            cfg = {**base, axis: v}
+            cfg = {**study_base, axis: v}
             cfg["dmodel"] = 64 * cfg["numHeads"]   # paper ℓ-h convention
             runs.append({
                 "study": study,
