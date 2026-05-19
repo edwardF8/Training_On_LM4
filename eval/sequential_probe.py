@@ -1,4 +1,4 @@
-"""Sequential probe — multi-field, TF / FP per field + FP_FULL.
+"""Sequential probe — multi-field TF per field.
 
 For each (eval person, exposure_idx) pair we render the full multi-field
 bio over the requested `fields` (in order), exactly as the model saw it
@@ -7,27 +7,18 @@ first uses a pronoun subject (He/She) and therefore depends on prior
 fields to disambiguate "who". To probe each field standing alone (full
 name as subject, no cross-field context), use `eval.separate_probing`.
 
-We score three families of metrics:
+We score one metric per field:
 
   TF_{field}   (Teacher-Forced)
       One forward pass on the full TRUE bio. For each field F, check that
       argmax matches the true token at *every* position in F's value span.
-      "Given the true bio up to (and including) F's value, does the model
-      predict each of F's value tokens?"
+      Each value position is conditioned on the true tokens up to that
+      point (including true earlier value tokens of F): "given the prompt
+      and the true partial value so far, does the model predict the next
+      value token?" TF_F = 1 iff every position in F's value span passes.
 
-  FP_{field}   (Full Prediction, AR through field F)
-      Greedy autoregressive decode starting from [EOS] over the full bio
-      length. Check that the generated tokens at F's value span equal the
-      true tokens for F. Mistakes in prior fields can corrupt this.
-
-  FP_FULL      (Full Prediction over the whole bio)
-      Same AR decode as above; FP_FULL is 1 iff the entire generated
-      sequence equals the true bio token-for-token (separators, trailing
-      punctuation, everything).
-
-One TF forward pass yields TF_F for every field at once; one AR decode
-yields every FP_F and FP_FULL together. So total cost per (person, exposure)
-is ~len(bio) forward passes (dominated by the AR decode).
+One TF forward pass yields TF_F for every field at once, so total cost
+per (person, exposure) is one forward pass on the full bio.
 
 Usage
 -----
@@ -144,10 +135,8 @@ def score_pair(
 
     Returns:
         {
-            "TF":      {field: 0/1},   # teacher-forced full-value match
-            "FP":      {field: 0/1},   # AR full-bio decode, field's value span match
-            "FP_FULL": 0/1,            # AR full-bio decode, entire sequence match
-            "t_idx":   {field: int},   # template chosen for this field at this exposure
+            "TF":    {field: 0/1},   # teacher-forced full-value match
+            "t_idx": {field: int},   # template chosen for this field at this exposure
         }
     """
     field_pieces = build_multi_field_pieces(person, fields, exposure_idx)
@@ -155,38 +144,22 @@ def score_pair(
         field_pieces, tokenizer, old_to_new, eos_remapped
     )
 
-    # ---- TF: one forward pass on the full TRUE bio ----
     x = torch.tensor(full_ids, dtype=torch.long, device=device).unsqueeze(0)
     logits = model(x).logits[0]   # (seq_len, vocab)
 
     tf = {}
     for f, (start, end) in zip(fields, spans):
-        # logits[p-1] predicts the token at position p.
+        # logits[p-1] predicts the token at position p (conditioned on
+        # full_ids[:p]: true prefix + true earlier value tokens of f).
         ok = all(
             int(logits[p - 1].argmax().item()) == full_ids[p]
             for p in range(start, end)
         )
         tf[f] = int(ok)
 
-    # ---- FP / FP_FULL: greedy AR decode from [EOS] ----
-    cur = torch.tensor([[eos_remapped]], dtype=torch.long, device=device)
-    generated: list[int] = [eos_remapped]
-    for _ in range(len(full_ids) - 1):
-        next_tok = int(model(cur).logits[0, -1].argmax().item())
-        generated.append(next_tok)
-        cur = torch.cat([cur, torch.tensor([[next_tok]], device=device)], dim=1)
-
-    fp = {
-        f: int(generated[start:end] == full_ids[start:end])
-        for f, (start, end) in zip(fields, spans)
-    }
-    fp_full = int(generated == full_ids)
-
     return {
-        "TF":      tf,
-        "FP":      fp,
-        "FP_FULL": fp_full,
-        "t_idx":   dict(zip(fields, t_indices)),
+        "TF":    tf,
+        "t_idx": dict(zip(fields, t_indices)),
     }
 
 
@@ -207,11 +180,10 @@ def run_probe(model, tokenizer, old_to_new, people, *,
               max_people: int = 50,
               n_exposures: int | None = None,
               device: str | None = None):
-    """Run the multi-field TF/FP/FP_FULL probe on an in-memory model.
+    """Run the multi-field TF probe on an in-memory model.
 
     Iterates `max_people * n_exposures` pairs. For each pair we run one TF
-    forward pass (yields all TF_F) and one greedy AR decode of len(bio)
-    steps (yields every FP_F plus FP_FULL).
+    forward pass on the full true bio, yielding all TF_F at once.
 
     `n_exposures` defaults to max(template-pool size across fields) so every
     template of every field is hit at least once; shorter pools cycle.
@@ -221,12 +193,10 @@ def run_probe(model, tokenizer, old_to_new, people, *,
             "fields":      list[str],
             "n_people":    int,
             "n_exposures": int,
-            "FP_FULL":     float,
             "per_field": {
                 <field>: {
                     "TF":           float,
-                    "FP":           float,
-                    "per_template": {t_idx: {"TF": float, "FP": float}},
+                    "per_template": {t_idx: {"TF": float}},
                     "n_templates":  int,
                 }
             },
@@ -248,11 +218,9 @@ def run_probe(model, tokenizer, old_to_new, people, *,
     eos_remapped = old_to_new[int(tokenizer.eos_token_id)]
     eval_people  = people[:max_people]
 
-    tf_totals      = {f: [0, 0] for f in fields}
-    fp_totals      = {f: [0, 0] for f in fields}
-    fp_full_totals = [0, 0]
-    per_template   = {
-        f: defaultdict(lambda: {"TF": [0, 0], "FP": [0, 0]})
+    tf_totals    = {f: [0, 0] for f in fields}
+    per_template = {
+        f: defaultdict(lambda: {"TF": [0, 0]})
         for f in fields
     }
 
@@ -266,43 +234,28 @@ def run_probe(model, tokenizer, old_to_new, people, *,
             )
             for f in fields:
                 tf_ok = scores["TF"][f]
-                fp_ok = scores["FP"][f]
                 t_idx = scores["t_idx"][f]
                 tf_totals[f][0] += tf_ok
                 tf_totals[f][1] += 1
-                fp_totals[f][0] += fp_ok
-                fp_totals[f][1] += 1
                 per_template[f][t_idx]["TF"][0] += tf_ok
                 per_template[f][t_idx]["TF"][1] += 1
-                per_template[f][t_idx]["FP"][0] += fp_ok
-                per_template[f][t_idx]["FP"][1] += 1
-            fp_full_totals[0] += scores["FP_FULL"]
-            fp_full_totals[1] += 1
             pbar.update(1)
     pbar.close()
 
-    fp_full = fp_full_totals[0] / max(fp_full_totals[1], 1)
-    print(f"\nFP_FULL: {fp_full_totals[0]}/{fp_full_totals[1]}  =  "
-          f"{100 * fp_full:5.1f}%")
-
     per_field_results = {}
+    print()
     for f in fields:
         tf_c, tf_n = tf_totals[f]
-        fp_c, fp_n = fp_totals[f]
         tf_acc = tf_c / max(tf_n, 1)
-        fp_acc = fp_c / max(fp_n, 1)
-        print(f"  [{f:>12s}]  TF: {tf_c}/{tf_n} = {100 * tf_acc:5.1f}%   "
-              f"FP: {fp_c}/{fp_n} = {100 * fp_acc:5.1f}%")
+        print(f"  [{f:>12s}]  TF: {tf_c}/{tf_n} = {100 * tf_acc:5.1f}%")
         per_t_acc = {
             int(t_idx): {
                 "TF": cnts["TF"][0] / max(cnts["TF"][1], 1),
-                "FP": cnts["FP"][0] / max(cnts["FP"][1], 1),
             }
             for t_idx, cnts in per_template[f].items()
         }
         per_field_results[f] = {
             "TF":           tf_acc,
-            "FP":           fp_acc,
             "per_template": per_t_acc,
             "n_templates":  len(FIELD_SPECS[f]["templates"]),
         }
@@ -311,7 +264,6 @@ def run_probe(model, tokenizer, old_to_new, people, *,
         "fields":      list(fields),
         "n_people":    len(eval_people),
         "n_exposures": n_exposures,
-        "FP_FULL":     fp_full,
         "per_field":   per_field_results,
     }
 

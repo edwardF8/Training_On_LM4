@@ -9,4 +9,5 @@ data/__pycache__/
 eval/__pycache__/
 model/__pycache__/
 wandb/
-
+figure-generator/figure/*
+figure-generator/source-results/*

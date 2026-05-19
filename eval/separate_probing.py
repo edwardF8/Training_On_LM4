@@ -15,14 +15,13 @@ Differs from `sequential_probe.run_probe` in two ways:
    `{first} {middle} {last}` for every field regardless of
    FIELD_SPECS[field]["subject"].
 
-Metrics per field (no FP_FULL, since each field is its own bio):
+Metric per field:
 
   TF   Teacher-forced: one forward pass on the full one-field bio;
        argmax must match the true token at every value-span position.
-
-  FP   Greedy autoregressive decode of the whole one-field bio from
-       [EOS]; check the generated tokens at the value span equal the
-       true value tokens.
+       Each value position is conditioned on the true tokens up to that
+       point (including true earlier value tokens). TF = 1 iff every
+       value-span position passes.
 
 Usage
 -----
@@ -122,14 +121,15 @@ def score_field_pair(
 ) -> dict:
     """Score one (person, field, exposure) triple.
 
-    Returns {"TF": 0/1, "FP": 0/1, "t_idx": int}.
+    Returns {"TF": 0/1, "t_idx": int}.
     """
     chunk = build_single_field_chunks(person, field, exposure_idx)
     full_ids, (start, end) = tokenize_single_field(
         chunk, tokenizer, old_to_new, eos_remapped
     )
 
-    # ---- TF: one forward pass, check argmax at every value position ----
+    # One forward pass; argmax at every value position must match
+    # (each position conditioned on true tokens up to that point).
     x = torch.tensor(full_ids, dtype=torch.long, device=device).unsqueeze(0)
     logits = model(x).logits[0]
     tf_ok = all(
@@ -137,16 +137,7 @@ def score_field_pair(
         for p in range(start, end)
     )
 
-    # ---- FP: AR decode from [EOS] over the whole one-field bio ----
-    cur = torch.tensor([[eos_remapped]], dtype=torch.long, device=device)
-    generated: list[int] = [eos_remapped]
-    for _ in range(len(full_ids) - 1):
-        next_tok = int(model(cur).logits[0, -1].argmax().item())
-        generated.append(next_tok)
-        cur = torch.cat([cur, torch.tensor([[next_tok]], device=device)], dim=1)
-    fp_ok = generated[start:end] == full_ids[start:end]
-
-    return {"TF": int(tf_ok), "FP": int(fp_ok), "t_idx": chunk["t_idx"]}
+    return {"TF": int(tf_ok), "t_idx": chunk["t_idx"]}
 
 
 # ----------------------------------------------------------------------------
@@ -158,12 +149,11 @@ def run_separate_probe(model, tokenizer, old_to_new, people, *,
                        max_people: int = 50,
                        n_exposures: int | None = None,
                        device: str | None = None):
-    """Run the separate-field probe on an in-memory model.
+    """Run the separate-field TF probe on an in-memory model.
 
     For each (person, field, exposure) triple we render an isolated one-field
-    bio (full name in place of any pronoun), do one TF forward pass, and one
-    greedy AR decode of bio length. Aggregates TF and FP per field, plus a
-    per-template breakdown.
+    bio (full name in place of any pronoun) and do one TF forward pass.
+    Aggregates TF per field with a per-template breakdown.
 
     `n_exposures` defaults to max(template-pool size across fields) so every
     template of every field is hit at least once; shorter pools cycle.
@@ -176,8 +166,7 @@ def run_separate_probe(model, tokenizer, old_to_new, people, *,
             "per_field": {
                 <field>: {
                     "TF":           float,
-                    "FP":           float,
-                    "per_template": {t_idx: {"TF": float, "FP": float}},
+                    "per_template": {t_idx: {"TF": float}},
                     "n_templates":  int,
                 }
             }
@@ -199,9 +188,9 @@ def run_separate_probe(model, tokenizer, old_to_new, people, *,
     eos_remapped = old_to_new[int(tokenizer.eos_token_id)]
     eval_people  = people[:max_people]
 
-    totals       = {f: {"TF": [0, 0], "FP": [0, 0]} for f in fields}
+    totals       = {f: {"TF": [0, 0]} for f in fields}
     per_template = {
-        f: defaultdict(lambda: {"TF": [0, 0], "FP": [0, 0]})
+        f: defaultdict(lambda: {"TF": [0, 0]})
         for f in fields
     }
 
@@ -215,16 +204,11 @@ def run_separate_probe(model, tokenizer, old_to_new, people, *,
                     person, field, exposure_idx, device=device,
                 )
                 tf_ok = scores["TF"]
-                fp_ok = scores["FP"]
                 t_idx = scores["t_idx"]
                 totals[field]["TF"][0] += tf_ok
                 totals[field]["TF"][1] += 1
-                totals[field]["FP"][0] += fp_ok
-                totals[field]["FP"][1] += 1
                 per_template[field][t_idx]["TF"][0] += tf_ok
                 per_template[field][t_idx]["TF"][1] += 1
-                per_template[field][t_idx]["FP"][0] += fp_ok
-                per_template[field][t_idx]["FP"][1] += 1
                 pbar.update(1)
     pbar.close()
 
@@ -232,21 +216,16 @@ def run_separate_probe(model, tokenizer, old_to_new, people, *,
     print()
     for f in fields:
         tf_c, tf_n = totals[f]["TF"]
-        fp_c, fp_n = totals[f]["FP"]
         tf_acc = tf_c / max(tf_n, 1)
-        fp_acc = fp_c / max(fp_n, 1)
-        print(f"  [{f:>12s}]  TF: {tf_c}/{tf_n} = {100 * tf_acc:5.1f}%   "
-              f"FP: {fp_c}/{fp_n} = {100 * fp_acc:5.1f}%")
+        print(f"  [{f:>12s}]  TF: {tf_c}/{tf_n} = {100 * tf_acc:5.1f}%")
         per_t_acc = {
             int(t_idx): {
                 "TF": cnts["TF"][0] / max(cnts["TF"][1], 1),
-                "FP": cnts["FP"][0] / max(cnts["FP"][1], 1),
             }
             for t_idx, cnts in per_template[f].items()
         }
         per_field_results[f] = {
             "TF":           tf_acc,
-            "FP":           fp_acc,
             "per_template": per_t_acc,
             "n_templates":  len(FIELD_SPECS[f]["templates"]),
         }

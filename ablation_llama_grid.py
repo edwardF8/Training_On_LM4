@@ -29,10 +29,9 @@ wandb keys (per run, dispatched by `eval/probes.py`)
 ----------------------------------------------------
     birthdayProbe/{MP,DayM,YearMD,FP}
     birthdayProbe/per_template               (table)
-    sequentialProbe/FP_FULL
-    sequentialProbe/<field>/{TF,FP}
+    sequentialProbe/<field>/TF
     sequentialProbe/per_template/<field>     (table)
-    separateProbe/<field>/{TF,FP}
+    separateProbe/<field>/TF
     separateProbe/per_template/<field>       (table)
 """
 
@@ -122,13 +121,13 @@ PROBES = ("sequential", "separate")
 BASE = {
     "numLayers": 4,
     "numHeads":  3,
-    "EPOCHS":    4,
+    "EPOCHS":    5,
 }
 
 GRID = {
     "numLayers": [2, 4, 6, 8],
     "numHeads":  [2, 4, 6, 8],
-    "EPOCHS":    [4, 8, 12, 16],
+    "EPOCHS":    [1, 2, 4, 8, 12, 16],
 }
 
 # Short axis labels used in grid run names (e.g. grid-L4-H6-E16).

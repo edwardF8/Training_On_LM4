@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=5
-#SBATCH --time=18:00:00
+#SBATCH --time=20:00:00
 #SBATCH --account=cis240072p
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
@@ -60,7 +60,7 @@ echo "Started: $(date)"
 nvidia-smi || true
 echo
 
-python -u ablation_llama.py 
+python -u $1
 
 echo
 echo "Finished: $(date)"

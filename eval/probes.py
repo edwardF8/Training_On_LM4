@@ -18,16 +18,16 @@ Probe namespaces (wandb keys + JSON filenames):
       Birthday-only, 4 metrics: MP / DayM / YearMD / FP.
 
   sequential      → eval/sequential_probe.py
-      wandb:  sequentialProbe/FP_FULL
-              sequentialProbe/<field>/{TF,FP}
+      wandb:  sequentialProbe/<field>/TF
               sequentialProbe/per_template/<field>     (table)
       json:   probe_sequential.json
       Multi-field bio rendered exactly as at training (pronouns after the
-      first field). Per (person, exposure): one TF pass + one AR decode of
-      the whole bio → all TF_<field>, FP_<field>, and FP_FULL together.
+      first field). Per (person, exposure): one TF forward pass on the
+      full true bio → TF_<field> = 1 iff every value-span position passes
+      under teacher forcing.
 
   separate        → eval/separate_probing.py
-      wandb:  separateProbe/<field>/{TF,FP}
+      wandb:  separateProbe/<field>/TF
               separateProbe/per_template/<field>       (table)
       json:   probe_separate.json
       Each field as an INDEPENDENT one-field bio with the full name always
@@ -76,15 +76,14 @@ def _run_sequential(model, tokenizer, old_to_new, people, fields, max_people):
         model, tokenizer, old_to_new, people,
         fields=fields, max_people=max_people,
     )
-    payload = {"sequentialProbe/FP_FULL": results["FP_FULL"]}
+    payload = {}
     tables = {}
     for f, fr in results["per_field"].items():
         payload[f"sequentialProbe/{f}/TF"] = fr["TF"]
-        payload[f"sequentialProbe/{f}/FP"] = fr["FP"]
         if fr["per_template"]:
-            table = wandb.Table(columns=["template_idx", "TF", "FP"])
+            table = wandb.Table(columns=["template_idx", "TF"])
             for t_idx, accs in sorted(fr["per_template"].items()):
-                table.add_data(int(t_idx), accs["TF"], accs["FP"])
+                table.add_data(int(t_idx), accs["TF"])
             tables[f"sequentialProbe/per_template/{f}"] = table
     return results, payload, tables, "probe_sequential.json"
 
@@ -99,11 +98,10 @@ def _run_separate(model, tokenizer, old_to_new, people, fields, max_people):
     tables = {}
     for f, fr in results["per_field"].items():
         payload[f"separateProbe/{f}/TF"] = fr["TF"]
-        payload[f"separateProbe/{f}/FP"] = fr["FP"]
         if fr["per_template"]:
-            table = wandb.Table(columns=["template_idx", "TF", "FP"])
+            table = wandb.Table(columns=["template_idx", "TF"])
             for t_idx, accs in sorted(fr["per_template"].items()):
-                table.add_data(int(t_idx), accs["TF"], accs["FP"])
+                table.add_data(int(t_idx), accs["TF"])
             tables[f"separateProbe/per_template/{f}"] = table
     return results, payload, tables, "probe_separate.json"
 
