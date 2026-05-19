@@ -3,3 +3,10 @@ runs/*
 data/cache/*
 .git/*
 logs/*
+__pycache__/
+cache/
+data/__pycache__/
+eval/__pycache__/
+model/__pycache__/
+wandb/
+
