@@ -3,3 +3,5 @@ runs/*
 data/cache/*
 .git/*
 logs/*
+figure-generator/figure/*
+figure-generator/source-results/*

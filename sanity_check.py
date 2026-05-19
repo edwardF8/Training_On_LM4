@@ -249,12 +249,12 @@ def check_probe_smoke():
 
         scores = score_pair(m, tok, old_to_new, eos_remapped, person,
                             fields, exposure_idx=0, device=device)
-        assert set(scores) == {"TF", "FP", "FP_FULL", "t_idx"}
+        assert set(scores) == {"TF", "t_idx"}
         assert set(scores["TF"].keys()) == set(fields)
 
         sep = score_field_pair(m, tok, old_to_new, eos_remapped, person,
                                "birthcity", exposure_idx=0, device=device)
-        assert set(sep) == {"TF", "FP", "t_idx"}
+        assert set(sep) == {"TF", "t_idx"}
         return (f"seq score_pair → keys={sorted(scores)}, "
                 f"sep score_field_pair → keys={sorted(sep)}")
     check("score_pair / score_field_pair end-to-end", score_sequential_end_to_end)

@@ -34,17 +34,17 @@ subset from:
     "sequential"       (eval/sequential_probe.py)
         Renders the full multi-field bio exactly as at training (pronouns
         after the first field). Per (person, exposure): one TF forward
-        pass + one greedy AR decode of the whole bio. Metrics:
-          • TF_<field>  — given TRUE prior bio, predicts every value token.
-          • FP_<field>  — AR decode from [EOS]; field's value span match.
-          • FP_FULL     — entire generated sequence matches token-for-token.
+        pass on the full true bio. Metric:
+          • TF_<field>  — teacher-forced; 1 iff every value-span position
+            argmax matches under teacher forcing (each position conditioned
+            on TRUE prior tokens, including true earlier value tokens).
 
     "separate"         (eval/separate_probing.py)
         Each field probed independently with the FULL NAME always
         substituted for the subject (the pronoun has no antecedent when
         the field stands alone). Per (person, field, exposure): one TF
-        pass + one AR decode of that one-field bio.
-          • TF_<field> / FP_<field>; no FP_FULL.
+        pass on that one-field bio.
+          • TF_<field>; same semantics as above.
 
 The (sequential − separate) gap reveals how much the model leans on
 cross-field context vs. direct (name → value) memorization.
@@ -53,10 +53,9 @@ wandb keys (per run, dispatched by `eval/probes.py`)
 ----------------------------------------------------
     birthdayProbe/{MP,DayM,YearMD,FP}
     birthdayProbe/per_template               (table)
-    sequentialProbe/FP_FULL
-    sequentialProbe/<field>/{TF,FP}
+    sequentialProbe/<field>/TF
     sequentialProbe/per_template/<field>     (table)
-    separateProbe/<field>/{TF,FP}
+    separateProbe/<field>/TF
     separateProbe/per_template/<field>       (table)
 """
 
@@ -130,11 +129,7 @@ CONFIG.GRAD_CLIP    = 1.0
 # Pick any subset of {"birthday_legacy", "sequential", "separate"}, Each probe lives in its own wandb namespace and JSON file (see eval/probes.py).
 PROBES = ("birthday_legacy",)
 
-
-# ---------------------------
-# ABLATION SWEEP — edit me
-# ---------------------------
-
+# ABLATION SWEEP 
 # BASE is the architecture every study starts from; 
 # each ABLATIONS entry overrides exactly one field and sweeps it. 
 # dmodel is computed from numHeads via the paper's ℓ-h convention (dmodel = 64 · numHeads).

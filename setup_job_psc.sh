@@ -60,7 +60,7 @@ echo "Started: $(date)"
 nvidia-smi || true
 echo
 
-python -u main.py
+python -u $1
 
 echo
 echo "Finished: $(date)"
