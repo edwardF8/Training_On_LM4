@@ -143,9 +143,8 @@ BASE = { "numLayers": 4, "numHeads":  3, "EPOCHS":   1}
 # Per-study overrides: add an optional "base" dict to any ABLATIONS entry
 # to overlay on top of the global BASE for that study only.
 ABLATIONS = {
-    "16EP_layer": {"axis": "numLayers", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
-    "16EP_heads": {"axis": "numHeads", "values": [4, 6, 8, 12], "base": {"EPOCHS": 16}},
-    "memorizing_attempts": {"axis": "numLayers", "values": [6, 8, 12], "base": {"EPOCHS": 16, "numHeads":6}},
+    "16EP_heads": {"axis": "numHeads", "values": [8, 12], "base": {"EPOCHS": 16}},
+    "memorizing_attempts": {"axis": "numLayers", "values": [8, 12], "base": {"EPOCHS": 12, "numHeads" : 6}},
 }
 
 def build_runs(base, ablations):

@@ -1,0 +1,6 @@
+### Memorize-attempts — heads sweep, birthday probe (accuracy %)
+
+| numHeads | MP | DayM | YearMD | FP |
+| --- | --- | --- | --- | --- |
+| 4 | 92.7% | 100.0% | 100.0% | 92.6% |
+| 6 | 94.0% | 98.6% | 99.9% | 92.5% |

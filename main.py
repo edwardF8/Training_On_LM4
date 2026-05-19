@@ -76,6 +76,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 PEOPLE_PATH      = DATA_DIR / "people.json"
 DATA_CONFIG_PATH = DATA_DIR / "data_config.json"
+REMAP_PATH       = DATA_DIR / "old_to_new.json"
 CONFIG.PRE_REDUCE_PATH  = str(DATA_DIR / "bios_prereduce.bin")
 CONFIG.POST_REDUCE_PATH = str(DATA_DIR / "bios_postreduce.bin")
 
@@ -145,6 +146,12 @@ old_to_new, _, CONFIG.reducedVocabSize = build_vocab_remap(CONFIG.PRE_REDUCE_PAT
 remap_token_file(CONFIG.PRE_REDUCE_PATH, CONFIG.POST_REDUCE_PATH, old_to_new)
 CONFIG.reducedEOSToken = old_to_new[int(CONFIG.eosToken)]
 print(f"Reduced vocab size: {CONFIG.reducedVocabSize}")
+
+# Persist the GPT-2 → reduced id mapping. Without this, a trained checkpoint
+# is unusable downstream — embedding id N has no meaning outside this dict.
+with open(REMAP_PATH, "w") as f:
+    json.dump({str(k): int(v) for k, v in old_to_new.items()}, f)
+print(f"Saved vocab remap → {REMAP_PATH}")
 
 # Seatbelt: every (template, person) rendering we'll evaluate on must be
 # expressible in the reduced vocab. Sample a few people × every exposure
