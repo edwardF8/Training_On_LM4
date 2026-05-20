@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=5
-#SBATCH --time=20:00:00
+#SBATCH --time=24:00:00
 #SBATCH --account=cis240072p
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
@@ -17,8 +17,6 @@
 #   - gpu:1 picks one A100 on the shared partition; switch to gpu:v100-32:1
 #     if you ever want a cheaper V100 node.
 #   - 5 CPUs covers HF Trainer's 2 dataloader workers + the main process.
-#   - 8h is enough for the full MODEL_CONFIGS sweep at the current MAX_STEPS;
-#     bump if you scale N, K, or model sizes up.
 #   - No explicit --mem: GPU-shared auto-allocates ~125G per A100 which is
 #     plenty for these small models.
 

@@ -12,10 +12,10 @@ payload + every per-template wandb.Table.
 Probe namespaces (wandb keys + JSON filenames):
 
   birthday_legacy → eval/birthday_probe_legacy.py
-      wandb:  birthdayProbe/MP, /DayM, /YearMD, /FP
+      wandb:  birthdayProbe/MP, /DayM, /YearMD, /FP, /LP
               birthdayProbe/per_template               (table)
       json:   probe_birthday.json
-      Birthday-only, 4 metrics: MP / DayM / YearMD / FP.
+      Birthday-only, 5 metrics: MP / DayM / YearMD / FP / LP.
 
   sequential      → eval/sequential_probe.py
       wandb:  sequentialProbe/<field>/TF
@@ -59,13 +59,15 @@ def _run_birthday_legacy(model, tokenizer, old_to_new, people, fields, max_peopl
         "birthdayProbe/DayM":   results["macro"]["DayM"],
         "birthdayProbe/YearMD": results["macro"]["YearMD"],
         "birthdayProbe/FP":     results["macro"]["FP"],
+        "birthdayProbe/LP":     results["macro"]["LP"],
     }
     tables = {}
     if results.get("per_template"):
-        table = wandb.Table(columns=["template_idx", "MP", "DayM", "YearMD", "FP"])
+        table = wandb.Table(
+            columns=["template_idx", "MP", "DayM", "YearMD", "FP", "LP"])
         for t_idx, accs in sorted(results["per_template"].items()):
-            table.add_data(int(t_idx),
-                           accs["MP"], accs["DayM"], accs["YearMD"], accs["FP"])
+            table.add_data(int(t_idx), accs["MP"], accs["DayM"],
+                           accs["YearMD"], accs["FP"], accs["LP"])
         tables["birthdayProbe/per_template"] = table
     return results, payload, tables, "probe_birthday.json"
 
@@ -114,16 +116,24 @@ PROBE_REGISTRY = {
 
 
 def run_probes(probes, model, tokenizer, old_to_new, people, *,
-               fields, out_dir, max_people: int = 50, run_name: str = ""):
+               fields, out_dir, max_people: int = 50, run_name: str = "",
+               epoch=None, wandb_step=None):
     """Run each requested probe, save JSON, and log to wandb.
 
     Args:
         probes: iterable of probe names (keys in PROBE_REGISTRY).
         fields: tuple of field names — passed to any probe that takes them.
-        out_dir: run directory; results land under f"{out_dir}/final/".
+        out_dir: run directory.
         max_people: shared across all probes.
         run_name: just for prettier console headers.
+        epoch: None for the final probe — JSON lands in
+            f"{out_dir}/final/probe_*.json". An int for a mid-training probe
+            — JSON lands in f"{out_dir}/probes/probe_*_epoch{N}.json" and the
+            wandb payload is tagged with the epoch.
+        wandb_step: explicit step for wandb.log (pass the trainer's
+            global_step so probe points line up with the loss curve).
 
+    Returns {probe_name: results_dict} for each probe run.
     Unknown probe names raise ValueError so typos fail fast.
     """
     for p in probes:
@@ -132,27 +142,39 @@ def run_probes(probes, model, tokenizer, old_to_new, people, *,
                 f"Unknown probe {p!r}; choices: {list(PROBE_REGISTRY)}"
             )
 
-    final_dir = Path(out_dir) / "final"
-    final_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(out_dir)
+    if epoch is None:
+        json_dir, suffix = out_dir / "final", ""
+    else:
+        json_dir, suffix = out_dir / "probes", f"_epoch{int(epoch)}"
+    json_dir.mkdir(parents=True, exist_ok=True)
 
     merged_payload = {}
     table_logs = []
+    all_results = {}
     for probe_name in probes:
         runner = PROBE_REGISTRY[probe_name]
-        print(f"\n=== {probe_name} probe on {run_name or '<unnamed>'} "
+        tag = f" (epoch {epoch})" if epoch is not None else ""
+        print(f"\n=== {probe_name} probe on {run_name or '<unnamed>'}{tag} "
               f"(fields={fields}) ===")
         results, payload, tables, json_name = runner(
             model, tokenizer, old_to_new, people, fields, max_people,
         )
-        json_path = final_dir / json_name
+        stem = json_name[:-5] if json_name.endswith(".json") else json_name
+        json_path = json_dir / f"{stem}{suffix}.json"
         with open(json_path, "w") as f:
             json.dump(results, f, indent=2)
         print(f"Saved → {json_path}")
         merged_payload.update(payload)
+        all_results[probe_name] = results
         for key, tbl in tables.items():
             table_logs.append((key, tbl))
 
+    if epoch is not None:
+        merged_payload["epoch"] = epoch
+    log_kw = {} if wandb_step is None else {"step": wandb_step}
     if merged_payload:
-        wandb.log(merged_payload)
+        wandb.log(merged_payload, **log_kw)
     for key, tbl in table_logs:
-        wandb.log({key: tbl})
+        wandb.log({key: tbl}, **log_kw)
+    return all_results

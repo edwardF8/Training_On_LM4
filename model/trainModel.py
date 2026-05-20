@@ -10,7 +10,7 @@ import torch
 from transformers import Trainer, TrainingArguments, default_data_collator
 
 
-def train(model, dataset, config, output_dir="runs/exp1"):
+def train(model, dataset, config, output_dir="runs/exp1", callbacks=None):
     """Train `model` on `dataset` according to `config`.
 
     Args:
@@ -19,6 +19,8 @@ def train(model, dataset, config, output_dir="runs/exp1"):
         config: Config object with BATCH_SIZE, LR, WEIGHT_DECAY, WARMUP_STEPS,
                 EPOCHS, GRAD_CLIP, SEED.
         output_dir: where checkpoints + final model go.
+        callbacks: optional list of HF TrainerCallback (e.g. ProbeAtEpochs,
+                which probes the in-memory model at chosen epoch boundaries).
 
     Returns:
         the trained Trainer (so you can grab metrics, the model, etc.).
@@ -58,6 +60,7 @@ def train(model, dataset, config, output_dir="runs/exp1"):
         # Default collator just stacks dicts of equal-length tensors — no
         # padding logic, no MLM masking. Perfect for our pre-packed data.
         data_collator=default_data_collator,
+        callbacks=callbacks,
     )
 
     trainer.train()

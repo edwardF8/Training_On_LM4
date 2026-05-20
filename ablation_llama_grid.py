@@ -1,23 +1,23 @@
 """Ablation sweep over Capo bioS models — full-factorial GRID.
 
-Same pipeline as `ablation_llama.py`, but `ABLATIONS` is a single grid
-entry that cross-products several axes (numLayers × numHeads × EPOCHS)
-into one big sweep instead of three independent single-axis sweeps. Run
-counts grow multiplicatively — use this when you have plenty of compute.
+Same pipeline as `ablation_llama.py`, but `GRID` cross-products several
+axes (numLayers × numHeads) into one big sweep instead of independent
+single-axis sweeps. Run counts grow multiplicatively. Epochs are not a
+swept axis: each run trains once to MAX_EPOCHS and the ProbeAtEpochs
+callback probes along the way (see RUN_PROBE_AFTER).
 
 For the single-axis version, see `ablation_llama.py`.
 
 Output layout
 -------------
-    runs/{NAME}/{INVOCATION}/{study}/{run_name}/
-        ...                                    # train checkpoints
-        final/                                 # final checkpoint dir
-            probe_birthday.json                # birthdayProbe results (if enabled)
-            probe_sequential.json              # sequentialProbe results (if enabled)
-            probe_separate.json                # separateProbe results (if enabled,
-                                               #   multi-field only)
+    runs/{NAME}/{INVOCATION}/
+        probe_curve.csv                        # one row per (run, probe epoch)
+        {study}/{run_name}/
+            ...                                # train checkpoints
+            probes/probe_*_epoch{N}.json       # mid-training probe results
+            final/probe_*.json                 # final-epoch probe results
 
-Run names look like `grid-L4-H6-E16` (encoded via AXIS_ABBREV below).
+Run names look like `grid-L4-H6` (encoded via AXIS_ABBREV below).
 
 Probing strategies — see `ablation_llama.py` docstring for full details.
 Pick any subset of {"birthday_legacy", "sequential", "separate"} via the
@@ -25,9 +25,9 @@ Pick any subset of {"birthday_legacy", "sequential", "separate"} via the
 want both `sequential` and `separate` so the cross-field vs. direct
 memorization gap shows up.
 
-wandb keys (per run, dispatched by `eval/probes.py`)
-----------------------------------------------------
-    birthdayProbe/{MP,DayM,YearMD,FP}
+wandb keys (per run, logged at every probe epoch by `eval/probes.py`)
+---------------------------------------------------------------------
+    birthdayProbe/{MP,DayM,YearMD,FP,LP}
     birthdayProbe/per_template               (table)
     sequentialProbe/<field>/TF
     sequentialProbe/per_template/<field>     (table)
@@ -57,7 +57,7 @@ from data.tokenize_pack import (
 )
 from model.buildModel import create_gpt2_model, create_llama_model
 from model.trainModel import train
-from eval.probes import run_probes
+from eval.probe_callback import ProbeAtEpochs
 
 
 # ---------------------------
@@ -66,12 +66,15 @@ from eval.probes import run_probes
 
 CONFIG = Config()
 
-CONFIG.NAME = "bioS_N-Bd-Bc-lama_epoch_GRID"
+CONFIG.NAME = "bioS_N-Bd_final_grid"
 
 INVOCATION = datetime.now().strftime("%Y%m%d-%H%M%S")
 print(f"INVOCATION = {INVOCATION}")
 
 SWEEP_NAME = f"{CONFIG.NAME}-{INVOCATION}"
+
+# Every (run, probe epoch) row from this sweep accumulates into one CSV.
+CURVE_CSV = Path("runs") / CONFIG.NAME / INVOCATION / "probe_curve.csv"
 
 CONFIG.SEED         = 0
 CONFIG.SHUFFLE_SEED = 1
@@ -80,7 +83,7 @@ CONFIG.SHUFFLE_SEED = 1
 CONFIG.N       = 50_000
 CONFIG.K       = 100
 CONFIG.SEQ_LEN = 512
-CONFIG.FIELDS  = ("birthday", "birthcity")
+CONFIG.FIELDS  = ("birthday",)
 
 # Derived paths
 DATA_DIR = Path("cache") / CONFIG.NAME
@@ -93,7 +96,7 @@ CONFIG.POST_REDUCE_PATH = str(DATA_DIR / "bios_postreduce.bin")
 
 # Training (shared across all ablation runs)
 CONFIG.MODEL_TYPE   = "llama"
-CONFIG.BATCH_SIZE   = 12
+CONFIG.BATCH_SIZE   = 24
 CONFIG.LR           = 1e-3
 CONFIG.WEIGHT_DECAY = 0.01
 CONFIG.WARMUP_STEPS = 1000
@@ -106,7 +109,7 @@ CONFIG.GRAD_CLIP    = 1.0
 # Pick any subset of {"birthday_legacy", "sequential", "separate"}.
 # Each probe lives in its own wandb namespace and JSON file (see eval/probes.py).
 
-PROBES = ("sequential", "separate")
+PROBES = ("birthday_legacy",)
 
 
 # ---------------------------
@@ -118,16 +121,22 @@ PROBES = ("sequential", "separate")
 # dmodel is computed from numHeads via the paper's ℓ-h convention
 # (dmodel = 64 · numHeads).
 
+# Each run trains once to MAX_EPOCHS; the ProbeAtEpochs callback probes the
+# in-memory model after every epoch in RUN_PROBE_AFTER, plus at MAX_EPOCHS,
+# so one run yields a whole probe-accuracy-vs-epoch curve.
+MAX_EPOCHS      = 16
+RUN_PROBE_AFTER = [1, 2, 4, 6, 8, 12]
+PROBE_EPOCHS    = sorted({e for e in RUN_PROBE_AFTER if e <= MAX_EPOCHS}
+                         | {MAX_EPOCHS})
+
 BASE = {
     "numLayers": 4,
     "numHeads":  3,
-    "EPOCHS":    5,
 }
 
 GRID = {
-    "numLayers": [2, 4, 6, 8],
-    "numHeads":  [2, 4, 6, 8],
-    "EPOCHS":    [1, 2, 4, 8, 12, 16],
+    "numLayers": [1, 2, 4, 8],
+    "numHeads":  [1, 2, 4, 6, 8],
 }
 
 # Short axis labels used in grid run names (e.g. grid-L4-H6-E16).
@@ -152,10 +161,11 @@ def build_runs(base, grid):
 
 
 RUNS = build_runs(BASE, GRID)
-print(f"Planned {len(RUNS)} grid runs:")
+print(f"Planned {len(RUNS)} grid runs "
+      f"(MAX_EPOCHS={MAX_EPOCHS}, probe @ epochs {PROBE_EPOCHS}):")
 for r in RUNS:
     print(f"  [{r['study']:>5}] {r['name']:<24} "
-          f"L={r['numLayers']} H={r['numHeads']} D={r['dmodel']} E={r['EPOCHS']}")
+          f"L={r['numLayers']} H={r['numHeads']} D={r['dmodel']}")
 
 
 # ---------------------------
@@ -213,7 +223,7 @@ for run in RUNS:
     CONFIG.numLayers = run["numLayers"]
     CONFIG.numHeads  = run["numHeads"]
     CONFIG.dmodel    = run["dmodel"]
-    CONFIG.EPOCHS    = run["EPOCHS"]
+    CONFIG.EPOCHS    = MAX_EPOCHS
 
     if CONFIG.MODEL_TYPE == "llama":
         model = create_llama_model(
@@ -254,14 +264,19 @@ for run in RUNS:
         },
     )
 
-    train(model, ds, CONFIG, output_dir=out_dir)
-    print(f"Done. Checkpoints under {out_dir}/")
-
-    run_probes(
-        PROBES, model, tokenizer, old_to_new, people,
-        fields=tuple(CONFIG.FIELDS),
-        out_dir=out_dir,
-        run_name=run["name"],
+    # Probe the in-memory model after each epoch in PROBE_EPOCHS (the final
+    # one included). Per-epoch rows accumulate in CURVE_CSV across the grid.
+    probe_cb = ProbeAtEpochs(
+        probes=PROBES, tokenizer=tokenizer, old_to_new=old_to_new,
+        people=people, fields=tuple(CONFIG.FIELDS),
+        out_dir=out_dir, run_name=run["name"],
+        probe_epochs=PROBE_EPOCHS, max_epochs=MAX_EPOCHS,
+        csv_path=CURVE_CSV,
+        run_info={"family": CONFIG.NAME, "study": run["study"],
+                  "numLayers": CONFIG.numLayers, "numHeads": CONFIG.numHeads,
+                  "dmodel": CONFIG.dmodel},
     )
+    train(model, ds, CONFIG, output_dir=out_dir, callbacks=[probe_cb])
+    print(f"Done. Checkpoints + per-epoch probes under {out_dir}/")
 
     wandb.finish()

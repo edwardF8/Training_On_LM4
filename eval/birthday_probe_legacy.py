@@ -1,4 +1,4 @@
-"""Birthday memorization probe — 4 metrics on every (person, template) pair.
+"""Birthday memorization probe — 5 metrics on every (person, template) pair.
 
 For each eval person and each of the 46 birthday paraphrase templates we
 build the prompt prefix `"<|endoftext|> {prefix}"` (everything before the
@@ -25,6 +25,15 @@ score four metrics:
       the target. Errors compound: a wrong month makes the day conditional
       on a wrong context.
 
+  LP         (Lenient Prediction)
+      Greedy free-decode from the prefix (up to LP_MAX_NEW_TOKENS tokens,
+      stopping at <|endoftext|>), then check the true date appears somewhere
+      in the generated bio as "Month D, YYYY". Unlike FP it need not come
+      immediately after the prompt and the surrounding wording is ignored —
+      this credits a model that knows the birthday but paraphrases its way
+      there (e.g. "...born on the memorable date of July 17, 1741."). If the
+      model emits a *different* date, or no date at all, it is scored wrong.
+
 Usage
 -----
     # from project root
@@ -37,6 +46,7 @@ bios_prereduce.bin (same as `recall_probe.py`).
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -49,7 +59,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from config import Config
 from data.bio_text import FIELD_SPECS
-from data.sample_people import sample_people
+from data.sample_people import sample_people, MONTHS
 from data.tokenize_pack import build_vocab_remap
 
 
@@ -95,6 +105,30 @@ def tokenize_and_remap(text: str, tokenizer, old_to_new: dict[int, int]) -> list
     return [old_to_new[int(t)] for t in raw]
 
 
+# Greedy budget for the lenient probe's free generation. The date reliably
+# surfaces well within this; decoding still stops early at <|endoftext|>.
+LP_MAX_NEW_TOKENS = 32
+
+# Matches a date written as "Month D, YYYY" — the bios' training format.
+_DATE_RE = re.compile(r"\b(" + "|".join(MONTHS) + r")\s+(\d{1,2}),\s*(\d{4})\b")
+
+
+def lenient_date_match(text: str, person: dict) -> bool:
+    """True iff `text` states this person's birthday — and no *other* date.
+
+    The lenient probe lets the model generate the rest of the bio freely and
+    only asks that the true date surface somewhere inside it: it need not come
+    immediately after the prompt, and the surrounding wording is irrelevant.
+
+    Guard against false credit: every "Month D, YYYY" date found in `text`
+    must equal the true birthday. If the model also emits a different date it
+    hedged (wrong); if it emits no recognizable date it failed too.
+    """
+    true  = (person["birthmonth"], int(person["birthday"]), int(person["birthyear"]))
+    found = {(m, int(d), int(y)) for m, d, y in _DATE_RE.findall(text)}
+    return found == {true}
+
+
 # ----------------------------------------------------------------------------
 # Scoring one (person, template) pair
 # ----------------------------------------------------------------------------
@@ -104,12 +138,13 @@ def score_pair(
     model,
     tokenizer,
     old_to_new: dict[int, int],
+    new_to_old: dict[int, int],
     eos_remapped: int,
     person: dict,
     template: str,
     device: str,
 ) -> dict[str, int]:
-    """Return {"MP": 0/1, "DayM": 0/1, "YearMD": 0/1, "FP": 0/1} for one pair."""
+    """Return {"MP","DayM","YearMD","FP","LP"} each 0/1 for one pair."""
     chunks = build_chunks(person, template)
 
     prefix_ids = [eos_remapped] + tokenize_and_remap(chunks["prefix"], tokenizer, old_to_new)
@@ -147,20 +182,32 @@ def score_pair(
         for i in range(len(year_ids))
     )
 
-    # ---- FP: greedy autoregressive decode for len(target) steps ----
+    # ---- FP + LP: one greedy decode, scored two ways ----
+    # FP wants exactly len(target) steps; LP wants room for the date to
+    # surface inside a longer paraphrase. Decode the larger budget once.
+    n_steps = max(len(target_ids), LP_MAX_NEW_TOKENS)
     cur = torch.tensor(prefix_ids, dtype=torch.long, device=device).unsqueeze(0)
     generated: list[int] = []
-    for _ in range(len(target_ids)):
+    for _ in range(n_steps):
         next_tok = int(model(cur).logits[0, -1].argmax().item())
         generated.append(next_tok)
         cur = torch.cat([cur, torch.tensor([[next_tok]], device=device)], dim=1)
-    fp_ok = generated == target_ids
+
+    # FP: the first len(target) greedy tokens must exactly equal the target.
+    fp_ok = generated[:len(target_ids)] == target_ids
+
+    # LP: decode the continuation up to the first <|endoftext|> (just this
+    # bio) and check the true date surfaces anywhere inside it.
+    eos_cut  = generated.index(eos_remapped) if eos_remapped in generated else len(generated)
+    gen_text = tokenizer.decode([new_to_old[t] for t in generated[:eos_cut]])
+    lp_ok    = lenient_date_match(gen_text, person)
 
     return {
         "MP":     int(mp_ok),
         "DayM":   int(dayM_ok),
         "YearMD": int(yearMD_ok),
         "FP":     int(fp_ok),
+        "LP":     int(lp_ok),
     }
 
 
@@ -190,6 +237,7 @@ def run_probe(model, tokenizer, old_to_new, people, *,
     model.eval()
 
     eos_remapped = old_to_new[int(tokenizer.eos_token_id)]
+    new_to_old   = {v: k for k, v in old_to_new.items()}
     templates = FIELD_SPECS["birthday"]["templates"]
     eval_people = people[:max_people]
 
@@ -200,8 +248,8 @@ def run_probe(model, tokenizer, old_to_new, people, *,
     pbar = tqdm(total=n_pairs, desc="probe")
     for person in eval_people:
         for t_idx, template in enumerate(templates):
-            scores = score_pair(model, tokenizer, old_to_new, eos_remapped,
-                                person, template, device=device)
+            scores = score_pair(model, tokenizer, old_to_new, new_to_old,
+                                eos_remapped, person, template, device=device)
             for metric, ok in scores.items():
                 totals[metric][0] += ok
                 totals[metric][1] += 1
@@ -213,7 +261,7 @@ def run_probe(model, tokenizer, old_to_new, people, *,
     print("\nMacro-average over all (person, template) pairs:")
     width = max(len(m) for m in totals)
     macro = {}
-    for metric in ("MP", "DayM", "YearMD", "FP"):
+    for metric in ("MP", "DayM", "YearMD", "FP", "LP"):
         c, n = totals[metric]
         acc = c / max(n, 1)
         macro[metric] = acc
@@ -223,7 +271,7 @@ def run_probe(model, tokenizer, old_to_new, people, *,
     per_t_acc = {
         int(t_idx): {
             m: per_template[t_idx][m][0] / max(per_template[t_idx][m][1], 1)
-            for m in ("MP", "DayM", "YearMD", "FP")
+            for m in ("MP", "DayM", "YearMD", "FP", "LP")
         }
         for t_idx in per_template
     }
