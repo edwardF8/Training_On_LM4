@@ -37,7 +37,6 @@ wandb keys (per run, logged at every probe epoch by `eval/probes.py`)
 
 import itertools
 import json
-import os
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -69,10 +68,7 @@ CONFIG = Config()
 
 CONFIG.NAME = "bioS_N-Bd_final_grid"
 
-# Set LM4_INVOCATION to an existing timestamp to RESUME that sweep: runs whose
-# final/ model already exists are skipped, so a crashed sweep picks up where it
-# stopped. Leave it unset for a fresh sweep (new timestamp).
-INVOCATION = os.environ.get("LM4_INVOCATION") or datetime.now().strftime("%Y%m%d-%H%M%S")
+INVOCATION = datetime.now().strftime("%Y%m%d-%H%M%S")
 print(f"INVOCATION = {INVOCATION}")
 
 SWEEP_NAME = f"{CONFIG.NAME}-{INVOCATION}"
@@ -224,15 +220,6 @@ print(f"Dataset has {len(ds):,} sequences.")
 # ---------------------------
 
 for run in RUNS:
-    out_dir = f"runs/{CONFIG.NAME}/{INVOCATION}/{run['study']}/{run['name']}"
-
-    # Resume support: a run that already saved a final/ model is complete, so
-    # skip it. Resubmitting with LM4_INVOCATION set then only trains what's
-    # missing — e.g. the runs left after a crash partway through the sweep.
-    if (Path(out_dir) / "final" / "model.safetensors").exists():
-        print(f"=== SKIP {run['study']}/{run['name']} — final/ already exists ===")
-        continue
-
     CONFIG.numLayers = run["numLayers"]
     CONFIG.numHeads  = run["numHeads"]
     CONFIG.dmodel    = run["dmodel"]
@@ -254,6 +241,8 @@ for run in RUNS:
         )
     else:
         raise ValueError(f"Unknown MODEL_TYPE: {CONFIG.MODEL_TYPE!r}")
+
+    out_dir = f"runs/{CONFIG.NAME}/{INVOCATION}/{run['study']}/{run['name']}"
 
     wandb_run_id = wandb.util.generate_id()
     print(f"\n=== Training {run['study']}/{run['name']} → {out_dir} "
