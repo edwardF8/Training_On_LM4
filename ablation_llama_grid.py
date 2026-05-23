@@ -37,6 +37,7 @@ wandb keys (per run, logged at every probe epoch by `eval/probes.py`)
 
 import itertools
 import json
+import os
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -68,7 +69,9 @@ CONFIG = Config()
 
 CONFIG.NAME = "bioS_N-Bd_final_grid"
 
-INVOCATION = datetime.now().strftime("%Y%m%d-%H%M%S")
+# Set INVOCATION=<existing-timestamp> in the env to resume an interrupted sweep
+# into the same runs/{NAME}/{INVOCATION}/ directory; otherwise a fresh one.
+INVOCATION = os.environ.get("INVOCATION") or datetime.now().strftime("%Y%m%d-%H%M%S")
 print(f"INVOCATION = {INVOCATION}")
 
 SWEEP_NAME = f"{CONFIG.NAME}-{INVOCATION}"
@@ -225,6 +228,20 @@ for run in RUNS:
     CONFIG.dmodel    = run["dmodel"]
     CONFIG.EPOCHS    = MAX_EPOCHS
 
+    out_dir_path = Path(f"runs/{CONFIG.NAME}/{INVOCATION}/{run['study']}/{run['name']}")
+    final_dir    = out_dir_path / "final"
+    ckpts        = sorted(out_dir_path.glob("checkpoint-*"),
+                          key=lambda p: int(p.name.split("-")[-1])) if out_dir_path.exists() else []
+
+    if final_dir.exists():
+        print(f"\n=== SKIP {run['study']}/{run['name']} — already completed "
+              f"({final_dir} exists) ===")
+        continue
+
+    resume_from_checkpoint = bool(ckpts)
+    if resume_from_checkpoint:
+        print(f"\n=== RESUME {run['study']}/{run['name']} from {ckpts[-1].name} ===")
+
     if CONFIG.MODEL_TYPE == "llama":
         model = create_llama_model(
             CONFIG.reducedVocabSize, CONFIG.SEQ_LEN,
@@ -242,7 +259,7 @@ for run in RUNS:
     else:
         raise ValueError(f"Unknown MODEL_TYPE: {CONFIG.MODEL_TYPE!r}")
 
-    out_dir = f"runs/{CONFIG.NAME}/{INVOCATION}/{run['study']}/{run['name']}"
+    out_dir = str(out_dir_path)
 
     wandb_run_id = wandb.util.generate_id()
     print(f"\n=== Training {run['study']}/{run['name']} → {out_dir} "
@@ -276,7 +293,8 @@ for run in RUNS:
                   "numLayers": CONFIG.numLayers, "numHeads": CONFIG.numHeads,
                   "dmodel": CONFIG.dmodel},
     )
-    train(model, ds, CONFIG, output_dir=out_dir, callbacks=[probe_cb])
+    train(model, ds, CONFIG, output_dir=out_dir, callbacks=[probe_cb],
+          resume_from_checkpoint=resume_from_checkpoint)
     print(f"Done. Checkpoints + per-epoch probes under {out_dir}/")
 
     wandb.finish()

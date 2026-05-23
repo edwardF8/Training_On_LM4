@@ -10,7 +10,8 @@ import torch
 from transformers import Trainer, TrainingArguments, default_data_collator
 
 
-def train(model, dataset, config, output_dir="runs/exp1", callbacks=None):
+def train(model, dataset, config, output_dir="runs/exp1", callbacks=None,
+          resume_from_checkpoint=None):
     """Train `model` on `dataset` according to `config`.
 
     Args:
@@ -21,6 +22,10 @@ def train(model, dataset, config, output_dir="runs/exp1", callbacks=None):
         output_dir: where checkpoints + final model go.
         callbacks: optional list of HF TrainerCallback (e.g. ProbeAtEpochs,
                 which probes the in-memory model at chosen epoch boundaries).
+        resume_from_checkpoint: forwarded to `trainer.train(...)`. `True` picks
+                the latest `checkpoint-*` under `output_dir`; a string path
+                resumes from that specific checkpoint; `None`/`False` trains
+                from scratch.
 
     Returns:
         the trained Trainer (so you can grab metrics, the model, etc.).
@@ -63,6 +68,6 @@ def train(model, dataset, config, output_dir="runs/exp1", callbacks=None):
         callbacks=callbacks,
     )
 
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     trainer.save_model(f"{output_dir}/final")
     return trainer
