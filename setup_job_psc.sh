@@ -31,8 +31,55 @@ module load cuda
 module load anaconda3
 # module load anaconda3                # uncomment if your env needs it
 
-# Activate the project conda env (fill in the name).
+# Initialize conda for this non-interactive shell. `module load anaconda3`
+# puts conda on $PATH but does NOT define the `conda` shell function, so
+# `conda activate` fails with "Run 'conda init' before 'conda deactivate'".
+# Try several known-good init paths; first one that works wins.
+echo "--- conda init debug ---"
+echo "which conda: $(which conda 2>/dev/null || echo none)"
+echo "CONDA_EXE:   ${CONDA_EXE:-unset}"
+
+# Disable -e for the init block so a failing fallback doesn't kill the job.
+set +e
+_conda_initialized=0
+
+# 1. The canonical conda-recommended pattern.
+eval "$(conda shell.bash hook 2>/dev/null)" \
+    && _conda_initialized=1 && echo "conda init: shell.bash hook OK"
+
+# 2. Source conda.sh from `conda info --base`.
+if [ "$_conda_initialized" = 0 ]; then
+    _base="$(conda info --base 2>/dev/null)"
+    if [ -n "$_base" ] && [ -f "$_base/etc/profile.d/conda.sh" ]; then
+        source "$_base/etc/profile.d/conda.sh" \
+            && _conda_initialized=1 \
+            && echo "conda init: sourced $_base/etc/profile.d/conda.sh"
+    fi
+fi
+
+# 3. Derive base from $(which conda) and source from there.
+if [ "$_conda_initialized" = 0 ]; then
+    _conda_bin="$(which conda 2>/dev/null)"
+    if [ -n "$_conda_bin" ]; then
+        _base="$(dirname "$(dirname "$_conda_bin")")"
+        if [ -f "$_base/etc/profile.d/conda.sh" ]; then
+            source "$_base/etc/profile.d/conda.sh" \
+                && _conda_initialized=1 \
+                && echo "conda init: sourced $_base/etc/profile.d/conda.sh (via which)"
+        fi
+    fi
+fi
+
+set -e
+if [ "$_conda_initialized" = 0 ]; then
+    echo "ERROR: could not initialize conda — none of the init paths worked." >&2
+    exit 1
+fi
+echo "--- conda init done ---"
+
+# Activate the project conda env.
 conda activate lm4
+echo "Active env: ${CONDA_DEFAULT_ENV:-none}  ($(which python))"
 
 # Keep HuggingFace + wandb caches on $LOCAL (fast node-local scratch) if set,
 # otherwise they default to $HOME and chew up your home quota.
