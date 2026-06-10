@@ -30,6 +30,15 @@ def train(model, dataset, config, output_dir="runs/exp1", callbacks=None,
     Returns:
         the trained Trainer (so you can grab metrics, the model, etc.).
     """
+    # Some cluster CUDA stacks (e.g. PSC Bridges-2, where torch relies on a
+    # system `module load cuda` rather than bundled wheels) ship a cuDNN that
+    # fails to initialize, crashing the first scaled_dot_product_attention with
+    # CUDNN_STATUS_NOT_INITIALIZED. Llama uses no other cuDNN ops, so disabling
+    # just the cuDNN SDPA backend forces the flash/mem-efficient/math kernels
+    # (pure CUDA, no cuDNN) with no numeric or throughput cost for this model.
+    if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+        torch.backends.cuda.enable_cudnn_sdp(False)
+
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # bf16 only on real CUDA GPUs that support it; fp32 on CPU/MPS.
