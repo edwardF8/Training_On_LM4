@@ -81,14 +81,15 @@ echo "--- conda init done ---"
 conda activate lm4
 echo "Active env: ${CONDA_DEFAULT_ENV:-none}  ($(which python))"
 
-# Keep HuggingFace + wandb caches on $LOCAL (fast node-local scratch) if set,
-# otherwise they default to $HOME and chew up your home quota.
-if [ -n "${LOCAL:-}" ]; then
-    export HF_HOME="$LOCAL/hf_cache"
-    export TRANSFORMERS_CACHE="$LOCAL/hf_cache"
-    export WANDB_CACHE_DIR="$LOCAL/wandb_cache"
-    mkdir -p "$HF_HOME" "$WANDB_CACHE_DIR"
-fi
+# Keep HuggingFace + wandb caches on project storage (data_storage -> /ocean)
+# so they never count against the 25G /jet home quota. Previously these went
+# to $LOCAL node-scratch when set (fast, but per-job ephemeral — re-downloads
+# every job) and silently fell back to $HOME otherwise, which is what kept
+# filling the quota. The repo's cache/ runs/ wandb/ logs/ dirs are symlinks
+# into data_storage too, so ALL heavy writes land on /ocean.
+export HF_HOME="$HOME/data_storage/hf_cache"
+export WANDB_CACHE_DIR="$HOME/data_storage/wandb_cache"
+mkdir -p "$HF_HOME" "$WANDB_CACHE_DIR"
 
 # wandb auth: prefer `wandb login` once on the login node (writes ~/.netrc).
 # If you can't do that, uncomment and set:
