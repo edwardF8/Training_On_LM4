@@ -101,7 +101,13 @@ CONFIG.FIELDS  = ("birthday",)
 LIMITED_PEOPLE_FRAC   = 0.20  # fraction of people with restricted templates
 LIMITED_TEMPLATE_FRAC = 0.25  # fraction of templates each limited person keeps
 ROBUSTNESS_SEED       = 0     # seeds the manifest sampling
-MAX_PEOPLE_PER_GROUP  = 100   # probe eval people per group (limited / full)
+MAX_PEOPLE_PER_GROUP  = 50    # probe eval people per group (limited / full).
+                              # Matches the non-robustness birthday probe's
+                              # max_people=50 (each group sized like that probe);
+                              # 50+50 -> 4,600 pairs/probe. The probe decode is
+                              # now KV-cached + batched, so probing is no longer
+                              # the sweep's bottleneck — see
+                              # docs/superpowers/specs/2026-06-10-robustness-probe-optimization.md
 
 # Derived paths
 DATA_DIR = Path("cache") / CONFIG.NAME
@@ -210,25 +216,64 @@ verify_limited_rendering(people, manifest, tuple(CONFIG.FIELDS),
                          K=CONFIG.K, n_check=5)
 print("Verified: first 5 limited people render only their allowed templates.")
 
-stream = robust_bio_stream(
-    people, K=CONFIG.K, manifest=manifest,
-    shuffle_seed=CONFIG.SHUFFLE_SEED, fields=tuple(CONFIG.FIELDS),
-)
-
 tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
 CONFIG.eosToken   = tokenizer.eos_token_id
 CONFIG.vocab_size = tokenizer.vocab_size
 
-n_tokens, n_seq = tokenize_and_pack(
-    tokenizer, stream,
-    n_bios_total=CONFIG.N * CONFIG.K,
-    out_path=CONFIG.PRE_REDUCE_PATH,
-    seq_len=CONFIG.SEQ_LEN,
-)
-print(f"Wrote {n_tokens:,} tokens → {n_seq:,} sequences of {CONFIG.SEQ_LEN}.")
+# --- dataset cache guard --------------------------------------------------
+# Tokenizing 50k*100 = 5M bios takes ~6 min. The bios bins depend only on the
+# data knobs below (NOT on the GRID of models), so a resubmit / walltime-resume
+# can reuse the existing bins instead of rebuilding them. We fingerprint those
+# knobs into DATA_DIR/.data_ready.json and rebuild only on a miss or mismatch,
+# so changing N/K/seed/fields or any robustness param correctly forces a fresh
+# build — never a silent reuse of stale data.
+DATA_READY_PATH = DATA_DIR / ".data_ready.json"
+DATA_FINGERPRINT = {
+    "N": CONFIG.N, "K": CONFIG.K, "SEQ_LEN": CONFIG.SEQ_LEN,
+    "FIELDS": list(CONFIG.FIELDS), "SEED": CONFIG.SEED,
+    "SHUFFLE_SEED": CONFIG.SHUFFLE_SEED,
+    "LIMITED_PEOPLE_FRAC": LIMITED_PEOPLE_FRAC,
+    "LIMITED_TEMPLATE_FRAC": LIMITED_TEMPLATE_FRAC,
+    "ROBUSTNESS_SEED": ROBUSTNESS_SEED,
+}
 
-old_to_new, _, CONFIG.reducedVocabSize = build_vocab_remap(CONFIG.PRE_REDUCE_PATH)
-remap_token_file(CONFIG.PRE_REDUCE_PATH, CONFIG.POST_REDUCE_PATH, old_to_new)
+
+def _cached_data_matches():
+    if not (Path(CONFIG.PRE_REDUCE_PATH).exists()
+            and Path(CONFIG.POST_REDUCE_PATH).exists()
+            and DATA_READY_PATH.exists()):
+        return False
+    try:
+        with open(DATA_READY_PATH) as f:
+            return json.load(f).get("fingerprint") == DATA_FINGERPRINT
+    except (json.JSONDecodeError, OSError):
+        return False
+
+
+if _cached_data_matches():
+    print("Reusing cached bios bins (fingerprint match) → skipping tokenize/remap.")
+    # old_to_new is still needed (probes + EOS remap); rebuild it from the
+    # existing prereduce bin via a fast np.unique — no re-tokenization.
+    old_to_new, _, CONFIG.reducedVocabSize = build_vocab_remap(CONFIG.PRE_REDUCE_PATH)
+else:
+    print("No matching dataset cache → building bios bins (~6 min).")
+    stream = robust_bio_stream(
+        people, K=CONFIG.K, manifest=manifest,
+        shuffle_seed=CONFIG.SHUFFLE_SEED, fields=tuple(CONFIG.FIELDS),
+    )
+    n_tokens, n_seq = tokenize_and_pack(
+        tokenizer, stream,
+        n_bios_total=CONFIG.N * CONFIG.K,
+        out_path=CONFIG.PRE_REDUCE_PATH,
+        seq_len=CONFIG.SEQ_LEN,
+    )
+    print(f"Wrote {n_tokens:,} tokens → {n_seq:,} sequences of {CONFIG.SEQ_LEN}.")
+    old_to_new, _, CONFIG.reducedVocabSize = build_vocab_remap(CONFIG.PRE_REDUCE_PATH)
+    remap_token_file(CONFIG.PRE_REDUCE_PATH, CONFIG.POST_REDUCE_PATH, old_to_new)
+    with open(DATA_READY_PATH, "w") as f:
+        json.dump({"fingerprint": DATA_FINGERPRINT,
+                   "n_tokens": n_tokens, "n_seq": n_seq}, f, indent=2)
+
 CONFIG.reducedEOSToken = old_to_new[int(CONFIG.eosToken)]
 print(f"Reduced vocab size: {CONFIG.reducedVocabSize}")
 

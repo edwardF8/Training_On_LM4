@@ -1,8 +1,10 @@
 """Bucket-math tests for eval/robustness_probe.py.
 
-score_pair is stubbed — no model, no tokenizer, no GPU. The stub makes FP
-correct exactly on (limited person, seen template) pairs and LP correct
-everywhere, so every bucket has a known expected value.
+score_pairs_fp_lp_batched (the batched decoder) is stubbed — no model, no
+tokenizer, no GPU. The stub makes FP correct exactly on (limited person, seen
+template) pairs and LP correct everywhere, so every bucket has a known
+expected value. (Equality of the real batched decoder with the per-pair
+score_pair lives in tests/test_probe_batching.py.)
 """
 import math
 
@@ -45,14 +47,17 @@ def test_run_probe_bucket_math(monkeypatch):
     id_to_idx = {people[i]["id"]: i for i in range(n_people)}
     t_to_idx = {t: i for i, t in enumerate(TEMPLATES)}
 
-    def fake_score_pair(model, tokenizer, old_to_new, new_to_old, eos_remapped,
-                        person, template, device):
-        p_idx = id_to_idx[person["id"]]
-        t_idx = t_to_idx[template]
-        fp = int(p_idx in allowed_by_idx and t_idx in allowed_by_idx[p_idx])
-        return {"MP": 0, "DayM": 0, "YearMD": 0, "FP": fp, "LP": 1}
+    def fake_batched(model, tokenizer, old_to_new, new_to_old, eos_remapped,
+                     pairs, device, batch_size=128):
+        out = []
+        for person, template in pairs:
+            p_idx = id_to_idx[person["id"]]
+            t_idx = t_to_idx[template]
+            fp = int(p_idx in allowed_by_idx and t_idx in allowed_by_idx[p_idx])
+            out.append({"FP": fp, "LP": 1})
+        return out
 
-    monkeypatch.setattr(rp, "score_pair", fake_score_pair)
+    monkeypatch.setattr(rp, "score_pairs_fp_lp_batched", fake_batched)
 
     res = rp.run_probe(FakeModel(), FakeTokenizer(), {50256: 0}, people,
                        manifest, max_people_per_group=per_group, device="cpu")

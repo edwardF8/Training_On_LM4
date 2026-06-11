@@ -212,6 +212,112 @@ def score_pair(
 
 
 # ----------------------------------------------------------------------------
+# Batched FP/LP scoring (KV-cached) — same greedy results as score_pair
+# ----------------------------------------------------------------------------
+
+@torch.no_grad()
+def score_pairs_fp_lp_batched(
+    model,
+    tokenizer,
+    old_to_new: dict[int, int],
+    new_to_old: dict[int, int],
+    eos_remapped: int,
+    pairs: list[tuple[dict, str]],
+    device: str,
+    batch_size: int = 128,
+) -> list[dict[str, int]]:
+    """Greedy-decode many (person, template) pairs at once; return FP/LP each.
+
+    A drop-in, much faster path for callers that need only the two greedy
+    metrics (the robustness probe). Returns a list of ``{"FP", "LP"}`` aligned
+    with ``pairs``. The teacher-forced metrics (MP/DayM/YearMD) are *not*
+    computed — use :func:`score_pair` if you need them.
+
+    Why this matches :func:`score_pair` exactly. The prompt/target token ids
+    are built with the *same* ``build_chunks`` + ``tokenize_and_remap`` code,
+    and FP/LP are read off the generated tokens with the *same* logic. The
+    only change is the decode mechanism: instead of one ungrouped, no-cache
+    forward per step per pair, we
+
+      - left-pad each batch's prefixes so every sequence's last real token sits
+        in the final column (its next-token logit is therefore at ``[:, -1]``
+        for the whole batch), and pass an attention mask + RoPE position ids so
+        the padding is inert; and
+      - carry ``past_key_values`` across steps (``use_cache=True``) so each step
+        only forwards the single new token.
+
+    Both are exact-equivalence transforms of greedy argmax decoding, so the
+    per-pair FP/LP are identical to looping :func:`score_pair` (verified in
+    ``tests/test_probe_batching.py``). Greedy never stops at EOS here, exactly
+    like ``score_pair`` — EOS only matters when slicing the text for LP.
+    """
+    # Pre-tokenize every pair once (identical construction to score_pair).
+    prepared = []
+    for person, template in pairs:
+        chunks = build_chunks(person, template)
+        prefix_ids = [eos_remapped] + tokenize_and_remap(chunks["prefix"], tokenizer, old_to_new)
+        target_ids = (
+            tokenize_and_remap(chunks["month"], tokenizer, old_to_new)
+            + tokenize_and_remap(chunks["day"],   tokenizer, old_to_new)
+            + tokenize_and_remap(chunks["sep"],   tokenizer, old_to_new)
+            + tokenize_and_remap(chunks["year"],  tokenizer, old_to_new)
+        )
+        prepared.append((prefix_ids, target_ids, person))
+
+    results: list[dict[str, int] | None] = [None] * len(pairs)
+    pbar = tqdm(total=len(pairs), desc="robust probe")
+    for start in range(0, len(prepared), batch_size):
+        chunk = prepared[start:start + batch_size]
+        bsz = len(chunk)
+        max_prefix = max(len(p) for p, _, _ in chunk)
+        # Mirror score_pair's per-pair budget (max(len(target), LP_MAX_NEW_TOKENS))
+        # with a single shared length — the largest any pair in the chunk needs.
+        n_steps = max(LP_MAX_NEW_TOKENS, max(len(t) for _, t, _ in chunk))
+
+        # Left-pad: real tokens are right-aligned, pad sits on the left (inert).
+        input_ids = torch.full((bsz, max_prefix), eos_remapped,
+                               dtype=torch.long, device=device)
+        attn = torch.zeros((bsz, max_prefix), dtype=torch.long, device=device)
+        for i, (prefix_ids, _, _) in enumerate(chunk):
+            L = len(prefix_ids)
+            input_ids[i, max_prefix - L:] = torch.tensor(prefix_ids, device=device)
+            attn[i, max_prefix - L:] = 1
+
+        # RoPE position ids from the mask (HF convention: pad positions -> 1).
+        pos = attn.long().cumsum(-1) - 1
+        pos = pos.masked_fill(attn == 0, 1)
+
+        out = model(input_ids=input_ids, attention_mask=attn,
+                    position_ids=pos, use_cache=True)
+        past = out.past_key_values
+        next_tok = out.logits[:, -1, :].argmax(-1)          # (bsz,)
+        cur_pos = pos[:, -1]                                 # last real position
+        gen_cols = [next_tok]
+        for _ in range(n_steps - 1):
+            attn = torch.cat(
+                [attn, torch.ones((bsz, 1), dtype=torch.long, device=device)], dim=1)
+            cur_pos = cur_pos + 1
+            out = model(input_ids=next_tok[:, None], attention_mask=attn,
+                        position_ids=cur_pos[:, None],
+                        past_key_values=past, use_cache=True)
+            past = out.past_key_values
+            next_tok = out.logits[:, -1, :].argmax(-1)
+            gen_cols.append(next_tok)
+        generated = torch.stack(gen_cols, dim=1).tolist()    # (bsz, n_steps)
+
+        for i, (_, target_ids, person) in enumerate(chunk):
+            gen = generated[i]
+            fp_ok = gen[:len(target_ids)] == target_ids
+            eos_cut = gen.index(eos_remapped) if eos_remapped in gen else len(gen)
+            gen_text = tokenizer.decode([new_to_old[t] for t in gen[:eos_cut]])
+            lp_ok = lenient_date_match(gen_text, person)
+            results[start + i] = {"FP": int(fp_ok), "LP": int(lp_ok)}
+        pbar.update(bsz)
+    pbar.close()
+    return results
+
+
+# ----------------------------------------------------------------------------
 # Driver
 # ----------------------------------------------------------------------------
 

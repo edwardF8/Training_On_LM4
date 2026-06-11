@@ -3,6 +3,12 @@
 **Date:** 2026-06-10
 **Status:** approved (brainstorm w/ Edward, 2026-06-10)
 
+> **Update (2026-06-10):** the probe was the sweep's wall-clock bottleneck. See
+> [2026-06-10-robustness-probe-optimization.md](2026-06-10-robustness-probe-optimization.md),
+> which supersedes the "No KV-cache or batching" non-goal below and lowers
+> `MAX_PEOPLE_PER_GROUP` 100 → 50. Probe FP/LP results are unchanged (proven by
+> `tests/test_probe_batching.py`).
+
 ## Research question
 
 Does the model still memorize a person's birthday when that person's bios appear
