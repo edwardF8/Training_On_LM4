@@ -1,0 +1,27 @@
+{
+    "NAME": "bioS_N-Bd_final_grid",
+    "N": 50000,
+    "K": 100,
+    "SEQ_LEN": 512,
+    "SEED": 0,
+    "SHUFFLE_SEED": 1,
+    "FIELDS": [
+        "birthday"
+    ],
+    "PRE_REDUCE_PATH": "cache/bioS_N-Bd_final_grid/bios_prereduce.bin",
+    "POST_REDUCE_PATH": "cache/bioS_N-Bd_final_grid/bios_postreduce.bin",
+    "MODEL_TYPE": "llama",
+    "numLayers": 8,
+    "dmodel": 512,
+    "numHeads": 8,
+    "vocab_size": 50257,
+    "eosToken": 50256,
+    "reducedVocabSize": 1836,
+    "reducedEOSToken": 1835,
+    "BATCH_SIZE": 24,
+    "LR": 0.001,
+    "WEIGHT_DECAY": 0.01,
+    "WARMUP_STEPS": 1000,
+    "EPOCHS": 1.0,
+    "GRAD_CLIP": 1.0
+}

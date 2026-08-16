@@ -11,3 +11,6 @@ model/__pycache__/
 wandb/
 figure-generator/figure/*
 figure-generator/source-results/*
+
+# Regenerated corpus (180MB each, rebuilt by release/regenerate_data.py)
+release/data/**/*.bin
